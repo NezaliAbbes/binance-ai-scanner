@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -22,32 +21,60 @@ session = requests.Session()
 
 
 def send_photo(photo_path, caption):
-    with open(photo_path, "rb") as img:
-        session.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            data={"chat_id": CHAT_ID, "caption": caption},
-            files={"photo": img},
-            timeout=20,
-        )
+    try:
+        with open(photo_path, "rb") as img:
+            response = session.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                data={
+                    "chat_id": CHAT_ID,
+                    "caption": caption
+                },
+                files={
+                    "photo": img
+                },
+                timeout=20
+            )
+
+        if response.ok:
+            print("Telegram message sent")
+        else:
+            print("Telegram error:", response.text)
+
+    except Exception as e:
+        print("Telegram exception:", e)
 
 
 def get_json(endpoint, params=None):
-    r = session.get(BASE + endpoint, params=params, timeout=15)
-    r.raise_for_status()
-    return r.json()
+    try:
+        response = session.get(
+            BASE + endpoint,
+            params=params,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+
+    except Exception as e:
+        print("Binance error:", e)
+        return None
 
 
 def load_signals():
     try:
-        with open("signals.json", "r") as f:
-            return json.load(f)
-    except:
+        with open("signals.json", "r") as file:
+            return json.load(file)
+    except Exception:
         return {}
 
 
 def save_signals(data):
-    with open("signals.json", "w") as f:
-        json.dump(data, f)
+    try:
+        with open("signals.json", "w") as file:
+            json.dump(data, file)
+    except Exception as e:
+        print("signals.json error:", e)
 
 
 def ema(values, period):
@@ -55,10 +82,13 @@ def ema(values, period):
         return None
 
     value = sum(values[:period]) / period
-    k = 2 / (period + 1)
+    multiplier = 2 / (period + 1)
 
-    for p in values[period:]:
-        value = (p - value) * k + value
+    for price in values[period:]:
+        value = (
+            (price - value) * multiplier
+            + value
+        )
 
     return value
 
@@ -71,22 +101,37 @@ def rsi(values, period=14):
     losses = []
 
     for i in range(1, len(values)):
-        d = values[i] - values[i - 1]
-        gains.append(max(d, 0))
-        losses.append(max(-d, 0))
+        change = values[i] - values[i - 1]
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+        if change >= 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
+
+    average_gain = sum(gains[:period]) / period
+    average_loss = sum(losses[:period]) / period
 
     for i in range(period, len(gains)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+        average_gain = (
+            (average_gain * (period - 1))
+            + gains[i]
+        ) / period
 
-    if avg_loss == 0:
+        average_loss = (
+            (average_loss * (period - 1))
+            + losses[i]
+        ) / period
+
+    if average_loss == 0:
         return 100
 
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    relative_strength = average_gain / average_loss
+
+    return 100 - (
+        100 / (1 + relative_strength)
+    )
 
 
 def confirm_trend(symbol):
@@ -96,22 +141,40 @@ def confirm_trend(symbol):
             {
                 "symbol": symbol,
                 "interval": CONFIRM_INTERVAL,
-                "limit": 60,
-            },
+                "limit": 60
+            }
         )
 
-        closes = [float(k[4]) for k in klines]
-
-        e20 = ema(closes, 20)
-        e50 = ema(closes, 50)
-        r = rsi(closes)
-
-        if None in (e20, e50, r):
+        if not klines:
             return False
 
-        return closes[-1] > e20 and e20 > e50 and r > 50
+        closes = [
+            float(kline[4])
+            for kline in klines
+        ]
 
-    except Exception:
+        ema20 = ema(closes, 20)
+        ema50 = ema(closes, 50)
+        r = rsi(closes)
+
+        if (
+            ema20 is None
+            or ema50 is None
+            or r is None
+        ):
+            return False
+
+        return (
+            closes[-1] > ema20
+            and ema20 > ema50
+            and r > 50
+        )
+
+    except Exception as e:
+        print(
+            f"Trend error {symbol}:",
+            e
+        )
         return False
 
 
@@ -122,211 +185,496 @@ def btc_market_ok():
             {
                 "symbol": "BTCUSDT",
                 "interval": "15m",
-                "limit": 60,
-            },
+                "limit": 60
+            }
         )
 
-        closes = [float(k[4]) for k in klines]
+        if not klines:
+            return True
 
-        e20 = ema(closes, 20)
-        e50 = ema(closes, 50)
-        r = rsi(closes)
-
-        return closes[-1] > e20 and e20 > e50 and r > 50
-
-    except Exception:
-        return True
-
-
-print("BINANCE AI SCANNER PRO 2.2 STARTED")
-
-market_ok = btc_market_ok()
-
-data = get_json("/api/v3/exchangeInfo")
-
-symbols = [
-    s["symbol"]
-    for s in data["symbols"]
-    if s["status"] == "TRADING"
-    and s["quoteAsset"] == "USDT"
-    and s["isSpotTradingAllowed"]
-]
-
-print(f"Pairs: {len(symbols)}")
-
-sent = load_signals()
-signals = []
-
-for i, symbol in enumerate(symbols, 1):
-
-    print(f"[{i}/{len(symbols)}] {symbol}")
-
-    try:
-
-        klines = get_json(
-            "/api/v3/klines",
-            {
-                "symbol": symbol,
-                "interval": INTERVAL,
-                "limit": LIMIT,
-            },
-        )
-
-        closes = [float(k[4]) for k in klines]
-        highs = [float(k[2]) for k in klines]
-        lows = [float(k[3]) for k in klines]
-        volumes = [float(k[5]) for k in klines]
-
-        price = closes[-1]
+        closes = [
+            float(kline[4])
+            for kline in klines
+        ]
 
         ema20 = ema(closes, 20)
         ema50 = ema(closes, 50)
         r = rsi(closes)
 
-        if None in (ema20, ema50, r):
+        if (
+            ema20 is None
+            or ema50 is None
+            or r is None
+        ):
+            return True
+
+        return (
+            closes[-1] > ema20
+            and ema20 > ema50
+            and r > 50
+        )
+
+    except Exception as e:
+        print("BTC error:", e)
+        return True
+
+
+def main():
+
+    print(
+        "BINANCE AI SCANNER PRO 2.2 STARTED"
+    )
+
+    if not BOT_TOKEN:
+        print("BOT_TOKEN missing")
+        return
+
+    if not CHAT_ID:
+        print("CHAT_ID missing")
+        return
+
+    market_ok = btc_market_ok()
+
+    print(
+        "BTC market:",
+        "OK" if market_ok else "WEAK"
+    )
+
+    data = get_json(
+        "/api/v3/exchangeInfo"
+    )
+
+    if not data:
+        print("Could not get Binance symbols")
+        return
+
+    symbols = []
+
+    for item in data.get("symbols", []):
+
+        if item.get("status") != "TRADING":
             continue
 
-        score = 0
-        reasons = []
-
-        if price > ema20:
-            score += 20
-            reasons.append("Price above EMA20")
-
-        if ema20 > ema50:
-            score += 20
-            reasons.append("EMA20 above EMA50")
-
-        # فلتر RSI النهائي (Pro 2.2)
-if 50 <= r <= 65:
-    score += 20
-    reasons.append(f"Perfect RSI {r:.1f}")
-elif 65 < r <= 70:
-    score += 10
-    reasons.append(f"High RSI {r:.1f}")
-else:
-    continue
-
-        avg_volume = sum(volumes[-21:-1]) / 20
-        vr = volumes[-1] / avg_volume if avg_volume else 0
-
-        if vr >= 2.0:
-            score += 25
-            reasons.append(f"Strong volume x{vr:.2f}")
-        elif vr >= 1.5:
-            score += 15
-            reasons.append(f"Good volume x{vr:.2f}")
-        else:
+        if item.get("quoteAsset") != "USDT":
             continue
 
-        if price > max(highs[-21:-1]):
-            score += 20
-            reasons.append("Breakout")
-
-        momentum = ((price / closes[-6]) - 1) * 100
-
-        if 0.5 <= momentum <= 4:
-            score += 15
-            reasons.append(f"Strong momentum +{momentum:.2f}%")
-        else:
+        if item.get("isSpotTradingAllowed") is not True:
             continue
 
-        if not market_ok:
-            score -= 20
-            reasons.append("BTC market weak")
+        symbol = item.get("symbol")
 
-        stop = min(lows[-20:])
-        risk = price - stop
+        if symbol:
+            symbols.append(symbol)
 
-        if risk <= 0:
-            continue
+    print(
+        f"USDT Spot pairs: {len(symbols)}"
+    )
 
-        tp1 = price + risk * 1.5
-        tp2 = price + risk * 2
-        tp3 = price + risk * 3
+    sent = load_signals()
 
-        reward_percent = ((tp1 - price) / price) * 100
+    signals = []
 
-        if reward_percent < 2:
-            continue
+    for index, symbol in enumerate(
+        symbols,
+        1
+    ):
 
-        if score >= MIN_SCORE and confirm_trend(symbol):
+        print(
+            f"[{index}/{len(symbols)}] {symbol}"
+        )
+
+        try:
+
+            klines = get_json(
+                "/api/v3/klines",
+                {
+                    "symbol": symbol,
+                    "interval": INTERVAL,
+                    "limit": LIMIT
+                }
+            )
+
+            if not klines:
+                continue
+
+            if len(klines) < 60:
+                continue
+
+            closes = [
+                float(kline[4])
+                for kline in klines
+            ]
+
+            highs = [
+                float(kline[2])
+                for kline in klines
+            ]
+
+            lows = [
+                float(kline[3])
+                for kline in klines
+            ]
+
+            volumes = [
+                float(kline[5])
+                for kline in klines
+            ]
+
+            price = closes[-1]
+
+            ema20 = ema(
+                closes,
+                20
+            )
+
+            ema50 = ema(
+                closes,
+                50
+            )
+
+            r = rsi(
+                closes,
+                14
+            )
+
+            if (
+                ema20 is None
+                or ema50 is None
+                or r is None
+            ):
+                continue
+
+            score = 0
+            reasons = []
+
+            # EMA20
+            if price > ema20:
+
+                score += 20
+
+                reasons.append(
+                    "Price above EMA20"
+                )
+
+            # EMA50
+            if ema20 > ema50:
+
+                score += 20
+
+                reasons.append(
+                    "EMA20 above EMA50"
+                )
+
+            # RSI FILTER
+            if 50 <= r <= 65:
+
+                score += 20
+
+                reasons.append(
+                    f"Perfect RSI {r:.1f}"
+                )
+
+            elif 65 < r <= 70:
+
+                score += 10
+
+                reasons.append(
+                    f"High RSI {r:.1f}"
+                )
+
+            else:
+
+                continue
+
+            # VOLUME
+            average_volume = (
+                sum(volumes[-21:-1])
+                / 20
+            )
+
+            if average_volume <= 0:
+                continue
+
+            volume_ratio = (
+                volumes[-1]
+                / average_volume
+            )
+
+            if volume_ratio >= 2.0:
+
+                score += 25
+
+                reasons.append(
+                    f"Strong volume x{volume_ratio:.2f}"
+                )
+
+            elif volume_ratio >= 1.5:
+
+                score += 15
+
+                reasons.append(
+                    f"Good volume x{volume_ratio:.2f}"
+                )
+
+            else:
+
+                continue
+
+            # BREAKOUT
+            previous_high = max(
+                highs[-21:-1]
+            )
+
+            if price > previous_high:
+
+                score += 20
+
+                reasons.append(
+                    "Breakout"
+                )
+
+            # MOMENTUM
+            momentum = (
+                (price / closes[-6])
+                - 1
+            ) * 100
+
+            if 0.5 <= momentum <= 4:
+
+                score += 15
+
+                reasons.append(
+                    f"Strong momentum "
+                    f"+{momentum:.2f}%"
+                )
+
+            else:
+
+                continue
+
+            # BTC MARKET
+            if not market_ok:
+
+                score -= 20
+
+                reasons.append(
+                    "BTC market weak"
+                )
+
+            # STOP LOSS
+            stop = min(
+                lows[-20:]
+            )
+
+            risk = price - stop
+
+            if risk <= 0:
+                continue
+
+            # TAKE PROFITS
+            tp1 = price + (
+                risk * 1.5
+            )
+
+            tp2 = price + (
+                risk * 2
+            )
+
+            tp3 = price + (
+                risk * 3
+            )
+
+            # TP1 MUST BE AT LEAST 2%
+            reward_percent = (
+                (tp1 - price)
+                / price
+            ) * 100
+
+            if reward_percent < 2:
+                continue
+
+            # SCORE
+            if score < MIN_SCORE:
+                continue
+
+            # 15M CONFIRMATION
+            if not confirm_trend(symbol):
+                continue
 
             signals.append(
                 {
                     "symbol": symbol,
                     "price": price,
-                    "score": min(score, 100),
+                    "score": min(
+                        score,
+                        100
+                    ),
                     "rsi": r,
-                    "volume": vr,
+                    "volume": volume_ratio,
                     "momentum": momentum,
                     "stop": stop,
                     "tp1": tp1,
                     "tp2": tp2,
                     "tp3": tp3,
                     "klines": klines,
-                    "reasons": reasons,
+                    "reasons": reasons
                 }
             )
 
-    except Exception as e:
-        print(symbol, e)
+        except Exception as e:
 
-    time.sleep(0.05)
+            print(
+                f"Analysis error "
+                f"{symbol}: {e}"
+            )
 
-signals.sort(key=lambda x: x["score"], reverse=True)
+        time.sleep(0.05)
 
-print(f"Signals found: {len(signals)}")
+    signals.sort(
+        key=lambda signal:
+        signal["score"],
+        reverse=True
+    )
 
-now = int(time.time())
+    print(
+        f"Signals found: "
+        f"{len(signals)}"
+    )
 
-for s in signals[:MAX_SIGNALS]:
+    now = int(
+        time.time()
+    )
 
-    last = sent.get(s["symbol"], 0)
+    sent_count = 0
 
-    if now - last < COOLDOWN:
-        continue
+    for signal in signals:
 
-    filename = f"{s['symbol']}.png"
+        if sent_count >= MAX_SIGNALS:
+            break
 
-    save_chart(s, s["klines"], filename)
+        symbol = signal["symbol"]
 
-    reward = s["tp1"] - s["price"]
-    risk_value = s["price"] - s["stop"]
-    rr = reward / risk_value if risk_value > 0 else 0
+        last_sent = sent.get(
+            symbol,
+            0
+        )
 
-    if rr >= 2:
-        label = "🟢 STRONG BUY"
-    elif rr >= 1.5:
-        label = "🟡 GOOD SETUP"
-    else:
-        continue
+        if (
+            now - last_sent
+            < COOLDOWN
+        ):
+            continue
 
-    caption = f"""{label}
+        risk_value = (
+            signal["price"]
+            - signal["stop"]
+        )
 
-🪙 {s['symbol']}
-💰 Price: {s['price']:g}
-📊 Score: {s['score']}/100
-📈 RSI: {s['rsi']:.1f}
-📊 Volume: x{s['volume']:.2f}
-🔥 Momentum: {s['momentum']:+.2f}%
+        reward_value = (
+            signal["tp1"]
+            - signal["price"]
+        )
 
-🛑 Stop: {s['stop']:g}
-🎯 TP1: {s['tp1']:g}
-🎯 TP2: {s['tp2']:g}
-🎯 TP3: {s['tp3']:g}
-⚖️ Risk/Reward: 1:{rr:.2f}
+        if risk_value <= 0:
+            continue
 
-📌 Reasons:
-{chr(10).join("✅ " + r for r in s["reasons"])}
-"""
+        rr = (
+            reward_value
+            / risk_value
+        )
 
-    send_photo(filename, caption)
+        if rr >= 2:
 
-    sent[s["symbol"]] = now
+            label = (
+                "🟢 STRONG BUY"
+            )
 
-    print(f"Sent: {s['symbol']}")
+        elif rr >= 1.5:
 
-save_signals(sent)
+            label = (
+                "🟡 GOOD SETUP"
+            )
 
-print("SCAN COMPLETED")
+        else:
+
+            continue
+
+        filename = (
+            f"{symbol}.png"
+        )
+
+        try:
+
+            save_chart(
+                signal,
+                signal["klines"],
+                filename
+            )
+
+        except Exception as e:
+
+            print(
+                f"Chart error "
+                f"{symbol}: {e}"
+            )
+
+            continue
+
+        reasons_text = "\n".join(
+            "✅ " + reason
+            for reason
+            in signal["reasons"]
+        )
+
+        caption = (
+            f"{label}\n\n"
+            f"🪙 {symbol}\n"
+            f"💰 Price: "
+            f"{signal['price']:g}\n"
+            f"📊 Score: "
+            f"{signal['score']}/100\n"
+            f"📈 RSI: "
+            f"{signal['rsi']:.1f}\n"
+            f"📊 Volume: "
+            f"x{signal['volume']:.2f}\n"
+            f"🔥 Momentum: "
+            f"{signal['momentum']:+.2f}%\n\n"
+            f"🛑 Stop: "
+            f"{signal['stop']:g}\n"
+            f"🎯 TP1: "
+            f"{signal['tp1']:g}\n"
+            f"🎯 TP2: "
+            f"{signal['tp2']:g}\n"
+            f"🎯 TP3: "
+            f"{signal['tp3']:g}\n"
+            f"⚖️ Risk/Reward: "
+            f"1:{rr:.2f}\n\n"
+            f"📌 Reasons:\n"
+            f"{reasons_text}\n\n"
+            f"⚠️ SPOT\n"
+            f"Technical analysis only."
+        )
+
+        send_photo(
+            filename,
+            caption
+        )
+
+        sent[symbol] = now
+
+        sent_count += 1
+
+        print(
+            f"Signal sent: "
+            f"{symbol}"
+        )
+
+    save_signals(sent)
+
+    print(
+        "SCAN COMPLETED"
+    )
+
+
+if __name__ == "__main__":
+    main()
