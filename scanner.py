@@ -68,6 +68,7 @@ def binance_get(endpoint, params=None):
 
 
 def get_symbols():
+    def get_symbols():
     data = binance_get("/api/v3/exchangeInfo")
 
     if not data:
@@ -76,4 +77,19 @@ def get_symbols():
     symbols = []
 
     for item in data.get("symbols", []):
+        if item.get("status") != "TRADING":
+            continue
+
+        if item.get("quoteAsset") != "USDT":
+            continue
+
+        if item.get("isSpotTradingAllowed") is not True:
+            continue
+
+        symbol = item.get("symbol")
+
+        if symbol:
+            symbols.append(symbol)
+
+    return symbols
         if item.get("status
