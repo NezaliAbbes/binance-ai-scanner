@@ -1,7 +1,7 @@
-
 import os
 import time
 import requests
+from chart import save_chart
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -15,9 +15,17 @@ MAX_SIGNALS = 3
 session = requests.Session()
 
 
-def send(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    session.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=15)
+def send_photo(photo_path, caption):
+    with open(photo_path, "rb") as img:
+        session.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            data={
+                "chat_id": CHAT_ID,
+                "caption": caption
+            },
+            files={"photo": img},
+            timeout=20
+        )
 
 
 def get_json(endpoint, params=None):
@@ -82,6 +90,7 @@ print(f"Pairs: {len(symbols)}")
 signals = []
 
 for i, symbol in enumerate(symbols, 1):
+
     print(f"[{i}/{len(symbols)}] {symbol}")
 
     try:
@@ -96,6 +105,7 @@ for i, symbol in enumerate(symbols, 1):
 
         closes = [float(k[4]) for k in klines]
         highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
         volumes = [float(k[5]) for k in klines]
 
         price = closes[-1]
@@ -124,12 +134,15 @@ for i, symbol in enumerate(symbols, 1):
         avg_volume = sum(volumes[-21:-1]) / 20
         vr = volumes[-1] / avg_volume if avg_volume else 0
 
-        if vr >= 1.5:
-            score += 20
+        if vr >= 2.0:
+            score += 25
             reasons.append(f"Strong volume x{vr:.2f}")
-        elif vr >= 1.2:
-            score += 10
-            reasons.append(f"Volume x{vr:.2f}")
+        elif vr >= 1.5:
+            score += 15
+            reasons.append(f"Good volume x{vr:.2f}")
+        elif vr < 1.0:
+            score -= 20
+            reasons.append(f"Weak volume x{vr:.2f}")
 
         if price > max(highs[-21:-1]):
             score += 20
@@ -141,18 +154,31 @@ for i, symbol in enumerate(symbols, 1):
             score += 10
             reasons.append(f"Momentum +{momentum:.2f}%")
 
+        stop = min(lows[-20:])
+        risk = price - stop
+
+        if risk <= 0:
+            continue
+
+        tp1 = price + risk * 1.5
+        tp2 = price + risk * 2
+        tp3 = price + risk * 3
+
         if score >= MIN_SCORE:
-            signals.append(
-                {
-                    "symbol": symbol,
-                    "price": price,
-                    "score": min(score, 100),
-                    "rsi": r,
-                    "volume": vr,
-                    "momentum": momentum,
-                    "reasons": reasons,
-                }
-            )
+            signals.append({
+                "symbol": symbol,
+                "price": price,
+                "score": min(score, 100),
+                "rsi": r,
+                "volume": vr,
+                "momentum": momentum,
+                "stop": stop,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp3": tp3,
+                "klines": klines,
+                "reasons": reasons
+            })
 
     except Exception as e:
         print(symbol, e)
@@ -164,20 +190,9 @@ signals.sort(key=lambda x: x["score"], reverse=True)
 print(f"Signals found: {len(signals)}")
 
 for s in signals[:MAX_SIGNALS]:
-    text = (
-        "🚨 BINANCE SPOT SIGNAL 🚨\n\n"
-        f"🪙 Coin: {s['symbol']}\n"
-        f"💰 Price: {s['price']:g}\n"
-        f"📊 Score: {s['score']}/100\n"
-        f"📈 RSI: {s['rsi']:.1f}\n"
-        f"📊 Volume: x{s['volume']:.2f}\n"
-        f"🔥 Momentum: {s['momentum']:+.2f}%\n\n"
-        "📌 Reasons:\n"
-        + "\n".join("✅ " + r for r in s["reasons"])
-        + "\n\n⚠️ Market: SPOT"
-    )
 
-    send(text)
-    print("Sent:", s["symbol"])
+    filename = f"{s['symbol']}.png"
+    save_chart(s, s["klines"], filename)
 
-print("SCAN COMPLETED")
+    caption = (
+        "🚨
