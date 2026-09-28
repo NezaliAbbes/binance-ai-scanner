@@ -1,3 +1,4 @@
+
 import requests
 import pandas as pd
 import numpy as np
@@ -32,18 +33,18 @@ try:
     ]
 except Exception as e:
     print(f"ERROR loading pairs: {e}")
-    exit()
+    raise SystemExit
 
 print(f"USDT Spot pairs: {len(pairs)}")
 
 for i, symbol in enumerate(pairs, 1):
     try:
-        kl = requests.get(
+        response = requests.get(
             f"{BASE}/api/v3/klines?symbol={symbol}&interval=15m&limit=120",
             timeout=10
         )
-        kl.raise_for_status()
-        kl = kl.json()
+        response.raise_for_status()
+        kl = response.json()
 
         if not isinstance(kl, list) or len(kl) < 60:
             continue
@@ -100,11 +101,7 @@ for i, symbol in enumerate(pairs, 1):
 
         rr = round((tp3 - entry) / risk, 2)
 
-        score = (
-            min(vol_ratio * 15, 40)
-            + (68 - abs(rsi - 56))
-            + 20
-        )
+        score = min(vol_ratio * 15, 40) + (68 - abs(rsi - 56)) + 20
 
         stats["qualified"] += 1
 
@@ -113,4 +110,47 @@ for i, symbol in enumerate(pairs, 1):
             "score": round(score),
             "rsi": round(rsi, 1),
             "vol": round(vol_ratio, 2),
-            "entry": round(entry,
+            "entry": round(entry, 6),
+            "stop": round(stop, 6),
+            "tp1": round(tp1, 6),
+            "tp2": round(tp2, 6),
+            "tp3": round(tp3, 6),
+            "rr": rr
+        })
+
+    except Exception:
+        continue
+
+    if i % 100 == 0:
+        print(f"Scanned: {i}/{len(pairs)}")
+
+best = sorted(best, key=lambda x: x["score"], reverse=True)
+
+print("\n" + "=" * 50)
+print("DIAGNOSTIC")
+print("=" * 50)
+print(f"Total scanned   : {stats['total']}")
+print(f"Passed RSI      : {stats['rsi']}")
+print(f"Passed Volume   : {stats['volume']}")
+print(f"Passed Trend    : {stats['trend']}")
+print(f"Passed Breakout : {stats['breakout']}")
+print(f"Qualified       : {stats['qualified']}")
+
+print("\n" + "=" * 50)
+print("TOP OPPORTUNITIES")
+print("=" * 50)
+
+if not best:
+    print("No qualified signals.")
+else:
+    for s in best[:10]:
+        print(
+            f"{s['symbol']} | Score {s['score']} | "
+            f"RSI {s['rsi']} | Vol x{s['vol']} | RR 1:{s['rr']}"
+        )
+        print(f" Entry : {s['entry']}")
+        print(f" Stop  : {s['stop']}")
+        print(f" TP1   : {s['tp1']}")
+        print(f" TP2   : {s['tp2']}")
+        print(f" TP3   : {s['tp3']}")
+        print("-" * 50)
