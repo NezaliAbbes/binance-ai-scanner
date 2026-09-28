@@ -1,35 +1,22 @@
 import os
-import time
 import requests
-from datetime import datetime
-
-# =========================================================
-# CONFIG
-# =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 BASE = "https://data-api.binance.vision"
 
-INTERVAL = "5m"
-CONFIRM_INTERVAL = "15m"
-LIMIT = 150
-
+LIMIT = 120
 MIN_SCORE = 85
 MAX_SIGNALS = 2
-COOLDOWN = 3600
 
-# =========================================================
-# HELPERS
-# =========================================================
 
 def get_json(url, params=None):
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         return r.json()
-    except Exception:
+    except:
         return None
 
 
@@ -37,13 +24,13 @@ def ema(values, period):
     if len(values) < period:
         return None
 
-    multiplier = 2 / (period + 1)
-    result = sum(values[:period]) / period
+    k = 2 / (period + 1)
+    e = sum(values[:period]) / period
 
     for price in values[period:]:
-        result = (price - result) * multiplier + result
+        e = price * k + e * (1 - k)
 
-    return result
+    return e
 
 
 def rsi(values, period=14):
@@ -56,263 +43,200 @@ def rsi(values, period=14):
     for i in range(1, len(values)):
         change = values[i] - values[i - 1]
 
-        if change > 0:
-            gains.append(change)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(change))
+        gains.append(max(change, 0))
+        losses.append(max(-change, 0))
 
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
 
     if avg_loss == 0:
         return 100
 
     rs = avg_gain / avg_loss
-    current_rsi = 100 - (100 / (1 + rs))
-
-    for i in range(period, len(gains)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-
-        if avg_loss == 0:
-            return 100
-
-        rs = avg_gain / avg_loss
-        current_rsi = 100 - (100 / (1 + rs))
-
-    return current_rsi
+    return 100 - (100 / (1 + rs))
 
 
-def get_klines(symbol, interval, limit=150):
-    data = get_json(
+def klines(symbol, interval):
+    return get_json(
         f"{BASE}/api/v3/klines",
         {
             "symbol": symbol,
             "interval": interval,
-            "limit": limit
+            "limit": LIMIT
         }
     )
 
-    if not data or len(data) < 60:
-        return None
 
-    return data
-
-
-def get_spot_symbols():
+def symbols():
     data = get_json(f"{BASE}/api/v3/exchangeInfo")
 
     if not data:
         return []
 
-    symbols = []
+    return [
+        x["symbol"]
+        for x in data["symbols"]
+        if x.get("status") == "TRADING"
+        and x.get("quoteAsset") == "USDT"
+        and x.get("isSpotTradingAllowed") is True
+    ]
 
-    for item in data.get("symbols", []):
-        if (
-            item.get("status") == "TRADING"
-            and item.get("quoteAsset") == "USDT"
-            and item.get("isSpotTradingAllowed") is True
-        ):
-            symbols.append(item["symbol"])
-
-    return symbols
-
-
-# =========================================================
-# DIAGNOSTIC STATS
-# =========================================================
-
-stats = {
-    "data": 0,
-    "trend": 0,
-    "rsi": 0,
-    "volume": 0,
-    "momentum": 0,
-    "breakout": 0,
-    "passed": 0
-}
-
-
-# =========================================================
-# BTC MARKET
-# =========================================================
-
-def btc_market():
-
-    klines = get_klines("BTCUSDT", "15m", 100)
-
-    if not klines:
-        return "UNKNOWN"
-
-    closes = [float(x[4]) for x in klines]
-
-    e20 = ema(closes, 20)
-    e50 = ema(closes, 50)
-
-    if not e20 or not e50:
-        return "UNKNOWN"
-
-    if closes[-1] > e20 > e50:
-        return "BULLISH"
-
-    if closes[-1] < e20 < e50:
-        return "WEAK"
-
-    return "NEUTRAL"
-
-
-# =========================================================
-# ANALYZE SYMBOL
-# =========================================================
 
 def analyze(symbol):
 
-    global stats
+    data = klines(symbol, "5m")
 
-    data = get_klines(symbol, INTERVAL, LIMIT)
-
-    if not data:
-        stats["data"] += 1
+    if not data or len(data) < 100:
         return None
 
-    closes = [float(x[4]) for x in data]
-    highs = [float(x[2]) for x in data]
-    volumes = [float(x[5]) for x in data]
+    close = [float(x[4]) for x in data]
+    high = [float(x[2]) for x in data]
+    volume = [float(x[5]) for x in data]
 
-    price = closes[-1]
+    price = close[-1]
 
-    # -----------------------------------------------------
-    # 1. TREND
-    # -----------------------------------------------------
+    ema20 = ema(close, 20)
+    ema50 = ema(close, 50)
+    ema100 = ema(close, 100)
 
-    e20 = ema(closes, 20)
-    e50 = ema(closes, 50)
-    e100 = ema(closes, 100)
-
-    if not e20 or not e50 or not e100:
-        stats["data"] += 1
+    if not ema20 or not ema50:
         return None
 
-    if not (price > e20 > e50):
-        stats["trend"] += 1
+    # =====================================================
+    # 1 — FIRST TREND FILTER
+    # =====================================================
+
+    # Modified:
+    # price only needs to be above EMA50
+    if price <= ema50:
         return None
 
-    # -----------------------------------------------------
-    # 2. RSI
-    # -----------------------------------------------------
+    score = 0
+    reasons = []
 
-    r = rsi(closes)
+    score += 10
+    reasons.append("Price above EMA50")
 
-    if r is None or not (50 <= r <= 65):
-        stats["rsi"] += 1
+    # Stronger trend
+    if price > ema20 > ema50:
+        score += 15
+        reasons.append("Strong 5m trend")
+
+    if ema100 and price > ema100:
+        score += 10
+        reasons.append("Price above EMA100")
+
+    # =====================================================
+    # 2 — RSI
+    # =====================================================
+
+    r = rsi(close)
+
+    if r is None:
         return None
 
-    # -----------------------------------------------------
-    # 3. VOLUME
-    # -----------------------------------------------------
+    if 50 <= r <= 60:
+        score += 15
+        reasons.append(f"Perfect RSI {r:.1f}")
 
-    recent_volume = sum(volumes[-5:]) / 5
-    previous_volume = sum(volumes[-25:-5]) / 20
+    elif 60 < r <= 65:
+        score += 10
+        reasons.append(f"High RSI {r:.1f}")
+
+    else:
+        return None
+
+    # =====================================================
+    # 3 — VOLUME
+    # =====================================================
+
+    recent_volume = sum(volume[-5:]) / 5
+    previous_volume = sum(volume[-25:-5]) / 20
 
     if previous_volume == 0:
-        stats["data"] += 1
         return None
 
     volume_ratio = recent_volume / previous_volume
 
     if volume_ratio < 1.5:
-        stats["volume"] += 1
         return None
-
-    # -----------------------------------------------------
-    # 4. MOMENTUM
-    # -----------------------------------------------------
-
-    old_price = closes[-6]
-
-    if old_price == 0:
-        stats["data"] += 1
-        return None
-
-    momentum = ((price - old_price) / old_price) * 100
-
-    if not (0.5 <= momentum <= 4):
-        stats["momentum"] += 1
-        return None
-
-    # -----------------------------------------------------
-    # 5. BREAKOUT
-    # -----------------------------------------------------
-
-    previous_high = max(highs[-21:-1])
-
-    breakout = ((price - previous_high) / previous_high) * 100
-
-    if breakout < -0.10:
-        stats["breakout"] += 1
-        return None
-
-    if breakout > 1.5:
-        stats["breakout"] += 1
-        return None
-
-    # -----------------------------------------------------
-    # PASSED
-    # -----------------------------------------------------
-
-    stats["passed"] += 1
-
-    score = 0
-
-    score += 15
-    score += 15
-
-    if price > e100:
-        score += 10
-
-    if 50 <= r <= 65:
-        score += 10
 
     if volume_ratio >= 2:
         score += 15
+        reasons.append(f"Strong volume x{volume_ratio:.2f}")
+
     else:
         score += 8
+        reasons.append(f"Good volume x{volume_ratio:.2f}")
+
+    # =====================================================
+    # 4 — MOMENTUM
+    # =====================================================
+
+    momentum = ((price - close[-6]) / close[-6]) * 100
+
+    if not 0.5 <= momentum <= 4:
+        return None
+
+    score += 10
+    reasons.append(f"Momentum +{momentum:.2f}%")
+
+    # Reject very fast movement
+    if momentum > 3.5:
+        score -= 5
+
+    # =====================================================
+    # 5 — BREAKOUT
+    # =====================================================
+
+    previous_high = max(high[-21:-1])
+
+    breakout = ((price - previous_high) / previous_high) * 100
+
+    if breakout > 1.5:
+        return None
 
     if breakout >= 0.20:
         score += 10
-    else:
+        reasons.append(f"Confirmed breakout +{breakout:.2f}%")
+
+    elif breakout >= -0.10:
         score += 5
+        reasons.append(f"Near breakout {breakout:.2f}%")
 
-    if 0.5 <= momentum <= 4:
-        score += 10
-
-    # -----------------------------------------------------
-    # 15m CONFIRMATION
-    # -----------------------------------------------------
-
-    data15 = get_klines(symbol, CONFIRM_INTERVAL, 100)
-
-    if not data15:
+    else:
         return None
 
-    closes15 = [float(x[4]) for x in data15]
+    # =====================================================
+    # 6 — 15m CONFIRMATION
+    # =====================================================
 
-    e20_15 = ema(closes15, 20)
-    e50_15 = ema(closes15, 50)
+    data15 = klines(symbol, "15m")
 
-    if not e20_15 or not e50_15:
+    if not data15 or len(data15) < 60:
         return None
 
-    if not (closes15[-1] > e20_15 > e50_15):
+    close15 = [float(x[4]) for x in data15]
+
+    ema20_15 = ema(close15, 20)
+    ema50_15 = ema(close15, 50)
+
+    if not ema20_15 or not ema50_15:
+        return None
+
+    if not (close15[-1] > ema20_15 > ema50_15):
         return None
 
     score += 15
+    reasons.append("15m trend confirmed")
 
-    # -----------------------------------------------------
-    # RESULT
-    # -----------------------------------------------------
+    # =====================================================
+    # FINAL SCORE
+    # =====================================================
 
     if score < MIN_SCORE:
         return None
@@ -324,7 +248,8 @@ def analyze(symbol):
         "rsi": r,
         "volume": volume_ratio,
         "momentum": momentum,
-        "breakout": breakout
+        "breakout": breakout,
+        "reasons": reasons
     }
 
 
@@ -334,82 +259,51 @@ def analyze(symbol):
 
 print("=" * 50)
 print("BINANCE AI SCANNER")
-print("DIAGNOSTIC MODE")
+print("FAST PRECISION MODE")
 print("=" * 50)
 
-btc_state = btc_market()
+all_symbols = symbols()
 
-print(f"BTC Market: {btc_state}")
-
-symbols = get_spot_symbols()
-
-print(f"USDT Spot pairs: {len(symbols)}")
-print()
+print(f"USDT Spot pairs: {len(all_symbols)}")
 
 signals = []
 
-for i, symbol in enumerate(symbols, 1):
+for i, symbol in enumerate(all_symbols, 1):
 
-    try:
+    result = analyze(symbol)
 
-        result = analyze(symbol)
+    if result:
+        signals.append(result)
 
-        if result:
-            signals.append(result)
+    if i % 100 == 0:
+        print(f"Scanned: {i}/{len(all_symbols)}")
 
-        if i % 50 == 0:
-            print(f"Scanned: {i}/{len(symbols)}")
 
-    except Exception:
-        stats["data"] += 1
+signals.sort(
+    key=lambda x: x["score"],
+    reverse=True
+)
 
-# =========================================================
-# DIAGNOSTIC REPORT
-# =========================================================
+signals = signals[:MAX_SIGNALS]
 
 print()
 print("=" * 50)
-print("DIAGNOSTIC REPORT")
+print(f"QUALIFIED SIGNALS: {len(signals)}")
 print("=" * 50)
 
-print(f"Data errors       : {stats['data']}")
-print(f"Rejected - Trend  : {stats['trend']}")
-print(f"Rejected - RSI    : {stats['rsi']}")
-print(f"Rejected - Volume : {stats['volume']}")
-print(f"Rejected - Mom.   : {stats['momentum']}")
-print(f"Rejected - Break. : {stats['breakout']}")
-print(f"Passed first scan : {stats['passed']}")
-print(f"Qualified signals : {len(signals)}")
-
-print("=" * 50)
-
-if signals:
-
-    signals.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
+for s in signals:
 
     print()
-    print("TOP CANDIDATES")
-    print()
+    print(f"🟢 {s['symbol']}")
+    print(f"Score: {s['score']}/100")
+    print(f"Price: {s['price']}")
+    print(f"RSI: {s['rsi']:.1f}")
+    print(f"Volume: x{s['volume']:.2f}")
+    print(f"Momentum: +{s['momentum']:.2f}%")
+    print(f"Breakout: {s['breakout']:+.2f}%")
 
-    for s in signals[:MAX_SIGNALS]:
-
-        print(
-            f"{s['symbol']} | "
-            f"Score {s['score']} | "
-            f"RSI {s['rsi']:.1f} | "
-            f"Vol x{s['volume']:.2f} | "
-            f"Momentum {s['momentum']:+.2f}% | "
-            f"Breakout {s['breakout']:+.2f}%"
-        )
-
-else:
-
-    print()
-    print("NO QUALIFIED SIGNALS")
-    print("The diagnostic report above shows the bottleneck.")
+    for reason in s["reasons"]:
+        print(f"✅ {reason}")
 
 print()
 print("SCAN COMPLETED")
