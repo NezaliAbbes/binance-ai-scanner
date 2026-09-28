@@ -1,5 +1,5 @@
-
 import os
+import json
 import time
 import requests
 from chart import save_chart
@@ -8,10 +8,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 BASE = "https://data-api.binance.vision"
+
 INTERVAL = "5m"
+CONFIRM_INTERVAL = "15m"
 LIMIT = 120
+
 MIN_SCORE = 60
 MAX_SIGNALS = 3
+COOLDOWN = 3600
 
 session = requests.Session()
 
@@ -32,13 +36,29 @@ def get_json(endpoint, params=None):
     return r.json()
 
 
+def load_signals():
+    try:
+        with open("signals.json", "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def save_signals(data):
+    with open("signals.json", "w") as f:
+        json.dump(data, f)
+
+
 def ema(values, period):
     if len(values) < period:
         return None
+
     value = sum(values[:period]) / period
     k = 2 / (period + 1)
+
     for p in values[period:]:
         value = (p - value) * k + value
+
     return value
 
 
@@ -68,7 +88,54 @@ def rsi(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
-print("BINANCE AI SCANNER PRO STARTED")
+def confirm_trend(symbol):
+    try:
+        klines = get_json(
+            "/api/v3/klines",
+            {"symbol": symbol, "interval": CONFIRM_INTERVAL, "limit": 60},
+        )
+
+        closes = [float(k[4]) for k in klines]
+
+        e20 = ema(closes, 20)
+        e50 = ema(closes, 50)
+        r = rsi(closes)
+
+        return (
+            e20 is not None
+            and e50 is not None
+            and r is not None
+            and closes[-1] > e20
+            and e20 > e50
+            and r > 50
+        )
+
+    except:
+        return False
+
+
+def btc_market_ok():
+    try:
+        klines = get_json(
+            "/api/v3/klines",
+            {"symbol": "BTCUSDT", "interval": "15m", "limit": 60},
+        )
+
+        closes = [float(k[4]) for k in klines]
+
+        e20 = ema(closes, 20)
+        e50 = ema(closes, 50)
+        r = rsi(closes)
+
+        return closes[-1] > e20 and e20 > e50 and r > 50
+
+    except:
+        return True
+
+
+print("BINANCE AI SCANNER PRO 2.0 STARTED")
+
+market_ok = btc_market_ok()
 
 data = get_json("/api/v3/exchangeInfo")
 
@@ -82,15 +149,22 @@ symbols = [
 
 print(f"Pairs: {len(symbols)}")
 
+sent = load_signals()
 signals = []
 
 for i, symbol in enumerate(symbols, 1):
+
     print(f"[{i}/{len(symbols)}] {symbol}")
 
     try:
+
         klines = get_json(
             "/api/v3/klines",
-            {"symbol": symbol, "interval": INTERVAL, "limit": LIMIT},
+            {
+                "symbol": symbol,
+                "interval": INTERVAL,
+                "limit": LIMIT,
+            },
         )
 
         closes = [float(k[4]) for k in klines]
@@ -99,6 +173,7 @@ for i, symbol in enumerate(symbols, 1):
         volumes = [float(k[5]) for k in klines]
 
         price = closes[-1]
+
         ema20 = ema(closes, 20)
         ema50 = ema(closes, 50)
         r = rsi(closes)
@@ -140,9 +215,16 @@ for i, symbol in enumerate(symbols, 1):
 
         momentum = ((price / closes[-6]) - 1) * 100
 
-        if 0.3 <= momentum <= 5:
-            score += 10
-            reasons.append(f"Momentum +{momentum:.2f}%")
+        if 0.5 <= momentum <= 4:
+            score += 15
+            reasons.append(f"Strong momentum +{momentum:.2f}%")
+        elif momentum < 0:
+            score -= 15
+            reasons.append(f"Weak momentum {momentum:.2f}%")
+
+        if not market_ok:
+            score -= 20
+            reasons.append("BTC market weak")
 
         stop = min(lows[-20:])
         risk = price - stop
@@ -154,7 +236,10 @@ for i, symbol in enumerate(symbols, 1):
         tp2 = price + risk * 2
         tp3 = price + risk * 3
 
-        if score >= MIN_SCORE:
+        if (
+            score >= MIN_SCORE
+            and confirm_trend(symbol)
+        ):
             signals.append(
                 {
                     "symbol": symbol,
@@ -181,13 +266,22 @@ signals.sort(key=lambda x: x["score"], reverse=True)
 
 print(f"Signals found: {len(signals)}")
 
+now = int(time.time())
+
 for s in signals[:MAX_SIGNALS]:
+
+    last = sent.get(s["symbol"], 0)
+
+    if now - last < COOLDOWN:
+        continue
+
     filename = f"{s['symbol']}.png"
+
     save_chart(s, s["klines"], filename)
 
-    caption = f"""🚨 BINANCE SPOT SIGNAL 🚨
+    caption = f"""🚀 STRONG BUY
 
-🪙 Coin: {s['symbol']}
+🪙 {s['symbol']}
 💰 Price: {s['price']:g}
 📊 Score: {s['score']}/100
 📈 RSI: {s['rsi']:.1f}
@@ -204,6 +298,11 @@ for s in signals[:MAX_SIGNALS]:
 """
 
     send_photo(filename, caption)
-    print("Sent:", s["symbol"])
+
+    sent[s["symbol"]] = now
+
+    print(f"Sent: {s['symbol']}")
+
+save_signals(sent)
 
 print("SCAN COMPLETED")
