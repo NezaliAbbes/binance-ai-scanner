@@ -1,3 +1,4 @@
+print("TEST SCANNER STARTED")
 import os
 import time
 import requests
