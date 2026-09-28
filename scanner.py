@@ -38,19 +38,19 @@ def send_photo(photo_path, caption):
 
     try:
         with open(photo_path, "rb") as photo:
-            response = requests.post(
+            r = requests.post(
                 url,
                 data={
                     "chat_id": CHAT_ID,
-                    "caption": caption,
+                    "caption": caption
                 },
                 files={
-                    "photo": photo,
+                    "photo": photo
                 },
-                timeout=30,
+                timeout=30
             )
 
-        print("Telegram:", response.status_code)
+        print("Telegram:", r.status_code)
 
     except Exception as e:
         print("Telegram error:", e)
@@ -64,9 +64,9 @@ def send_message(text):
             url,
             data={
                 "chat_id": CHAT_ID,
-                "text": text,
+                "text": text
             },
-            timeout=20,
+            timeout=20
         )
 
     except Exception as e:
@@ -80,24 +80,23 @@ def send_message(text):
 def get_json(path, params=None):
 
     try:
-
-        response = requests.get(
+        r = requests.get(
             BASE + path,
             params=params,
-            timeout=15,
+            timeout=15
         )
 
-        if response.status_code != 200:
+        if r.status_code != 200:
             return None
 
-        return response.json()
+        return r.json()
 
     except Exception:
         return None
 
 
 # =========================================================
-# SIGNAL MEMORY
+# MEMORY
 # =========================================================
 
 def load_signals():
@@ -106,7 +105,6 @@ def load_signals():
         return {}
 
     try:
-
         with open(SIGNALS_FILE, "r") as f:
             return json.load(f)
 
@@ -162,7 +160,6 @@ def rsi(values, period=14):
         if change > 0:
             gains.append(change)
             losses.append(0)
-
         else:
             gains.append(0)
             losses.append(abs(change))
@@ -206,7 +203,7 @@ def atr(highs, lows, closes, period=14):
         tr = max(
             highs[i] - lows[i],
             abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
         )
 
         trs.append(tr)
@@ -225,8 +222,8 @@ def get_klines(symbol, interval, limit=150):
         {
             "symbol": symbol,
             "interval": interval,
-            "limit": limit,
-        },
+            "limit": limit
+        }
     )
 
     if not data:
@@ -235,30 +232,11 @@ def get_klines(symbol, interval, limit=150):
     try:
 
         return {
-            "opens": [
-                float(x[1])
-                for x in data
-            ],
-
-            "highs": [
-                float(x[2])
-                for x in data
-            ],
-
-            "lows": [
-                float(x[3])
-                for x in data
-            ],
-
-            "closes": [
-                float(x[4])
-                for x in data
-            ],
-
-            "volumes": [
-                float(x[5])
-                for x in data
-            ],
+            "opens": [float(x[1]) for x in data],
+            "highs": [float(x[2]) for x in data],
+            "lows": [float(x[3]) for x in data],
+            "closes": [float(x[4]) for x in data],
+            "volumes": [float(x[5]) for x in data]
         }
 
     except Exception:
@@ -266,7 +244,7 @@ def get_klines(symbol, interval, limit=150):
 
 
 # =========================================================
-# BULLISH TREND
+# TREND
 # =========================================================
 
 def bullish_trend(data):
@@ -286,21 +264,40 @@ def bullish_trend(data):
 
 
 # =========================================================
-# BTC FILTER
+# BTC CONDITION
 # =========================================================
 
-def btc_market_ok():
+def btc_condition():
 
     data = get_klines(
         "BTCUSDT",
         "15m",
-        100,
+        100
     )
 
     if not data:
-        return False
+        return "UNKNOWN"
 
-    return bullish_trend(data)
+    closes = data["closes"]
+
+    e20 = ema(closes, 20)
+    e50 = ema(closes, 50)
+
+    if e20 is None or e50 is None:
+        return "UNKNOWN"
+
+    price = closes[-1]
+
+    # Strong bullish
+    if price > e20 > e50:
+        return "BULLISH"
+
+    # Neutral
+    if price > e50:
+        return "NEUTRAL"
+
+    # Bearish
+    return "WEAK"
 
 
 # =========================================================
@@ -313,8 +310,8 @@ def order_book_analysis(symbol):
         "/api/v3/depth",
         {
             "symbol": symbol,
-            "limit": 20,
-        },
+            "limit": 20
+        }
     )
 
     if not data:
@@ -324,14 +321,12 @@ def order_book_analysis(symbol):
 
         bids = sum(
             float(price) * float(quantity)
-            for price, quantity
-            in data["bids"]
+            for price, quantity in data["bids"]
         )
 
         asks = sum(
             float(price) * float(quantity)
-            for price, quantity
-            in data["asks"]
+            for price, quantity in data["asks"]
         )
 
         if asks == 0:
@@ -347,12 +342,12 @@ def order_book_analysis(symbol):
 # SCORE
 # =========================================================
 
-def calculate_score(
+def analyze(
     data5,
     data15,
     data1h,
     book_ratio,
-    btc_ok,
+    btc_state
 ):
 
     closes = data5["closes"]
@@ -371,33 +366,49 @@ def calculate_score(
     score = 0
     reasons = []
 
-    # -----------------------------------------------------
+    # =====================================================
     # 5M TREND - 15
-    # -----------------------------------------------------
+    # =====================================================
 
     if price > e20 > e50:
 
         score += 15
+
         reasons.append(
-            "Price > EMA20 > EMA50"
+            "Price above EMA20"
+        )
+
+        reasons.append(
+            "EMA20 above EMA50"
         )
 
     else:
-
         return None
 
-    # -----------------------------------------------------
+    # =====================================================
+    # LONG TERM TREND - 10
+    # =====================================================
+
+    e100 = ema(closes, 100)
+
+    if e100 and price > e100:
+
+        score += 10
+
+        reasons.append(
+            "Price above long-term EMA"
+        )
+
+    # =====================================================
     # RSI - 10
-    # -----------------------------------------------------
+    # =====================================================
 
     current_rsi = rsi(closes)
 
     if current_rsi is None:
         return None
 
-    # ULTRA PRECISION:
-    # RSI must be 50-65
-
+    # Strict but not excessive
     if not 50 <= current_rsi <= 65:
         return None
 
@@ -407,9 +418,9 @@ def calculate_score(
         f"RSI {current_rsi:.1f}"
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # VOLUME - 15
-    # -----------------------------------------------------
+    # =====================================================
 
     average_volume = (
         sum(volumes[-21:-1])
@@ -443,48 +454,46 @@ def calculate_score(
         f"Volume x{volume_ratio:.2f}"
     )
 
-    # -----------------------------------------------------
-    # CONFIRMED BREAKOUT - 15
-    # -----------------------------------------------------
+    # =====================================================
+    # BREAKOUT - 15
+    # =====================================================
 
     previous_high = max(
         highs[-21:-1]
     )
 
-    # Current CLOSED candle must be above
-    # previous 20-candle high
-
-    if price <= previous_high:
-        return None
-
-    breakout_percent = (
+    breakout = (
         (price - previous_high)
         / previous_high
         * 100
     )
 
-    # Avoid huge late entries
+    # We allow near-breakout
+    # to avoid zero candidates
 
-    if breakout_percent > 1.5:
-        return None
-
-    if breakout_percent >= 0.20:
+    if breakout >= 0.20:
 
         score += 15
+
         reasons.append(
-            f"Confirmed breakout +{breakout_percent:.2f}%"
+            f"Confirmed breakout +{breakout:.2f}%"
+        )
+
+    elif breakout >= -0.10:
+
+        score += 8
+
+        reasons.append(
+            f"Near breakout {breakout:+.2f}%"
         )
 
     else:
 
-        score += 10
-        reasons.append(
-            f"Breakout +{breakout_percent:.2f}%"
-        )
+        return None
 
-    # -----------------------------------------------------
+    # =====================================================
     # MOMENTUM - 10
-    # -----------------------------------------------------
+    # =====================================================
 
     momentum = (
         (price - closes[-6])
@@ -493,6 +502,7 @@ def calculate_score(
     )
 
     if not 0.5 <= momentum <= 4:
+
         return None
 
     score += 10
@@ -501,14 +511,14 @@ def calculate_score(
         f"Momentum +{momentum:.2f}%"
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ATR - 5
-    # -----------------------------------------------------
+    # =====================================================
 
     atr_value = atr(
         data5["highs"],
         data5["lows"],
-        closes,
+        closes
     )
 
     if not atr_value:
@@ -521,6 +531,7 @@ def calculate_score(
     )
 
     if not 0.3 <= atr_percent <= 3:
+
         return None
 
     score += 5
@@ -529,22 +540,25 @@ def calculate_score(
         f"Healthy ATR {atr_percent:.2f}%"
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # 15M - 15
-    # -----------------------------------------------------
+    # =====================================================
 
-    if not bullish_trend(data15):
+    if bullish_trend(data15):
+
+        score += 15
+
+        reasons.append(
+            "15m trend confirmed"
+        )
+
+    else:
+
         return None
 
-    score += 15
-
-    reasons.append(
-        "15m trend confirmed"
-    )
-
-    # -----------------------------------------------------
+    # =====================================================
     # 1H - 10
-    # -----------------------------------------------------
+    # =====================================================
 
     if bullish_trend(data1h):
 
@@ -554,30 +568,35 @@ def calculate_score(
             "1h trend confirmed"
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ORDER BOOK - 10
-    # -----------------------------------------------------
-
-    if book_ratio < 1.10:
-        return None
+    # =====================================================
 
     if book_ratio >= 1.30:
 
         score += 10
 
-    else:
+        reasons.append(
+            f"Strong buy pressure x{book_ratio:.2f}"
+        )
+
+    elif book_ratio >= 1.10:
 
         score += 5
 
-    reasons.append(
-        f"Buy pressure x{book_ratio:.2f}"
-    )
+        reasons.append(
+            f"Buy pressure x{book_ratio:.2f}"
+        )
 
-    # -----------------------------------------------------
+    else:
+
+        return None
+
+    # =====================================================
     # BTC - 5
-    # -----------------------------------------------------
+    # =====================================================
 
-    if btc_ok:
+    if btc_state == "BULLISH":
 
         score += 5
 
@@ -585,21 +604,34 @@ def calculate_score(
             "BTC market supportive"
         )
 
+    elif btc_state == "NEUTRAL":
+
+        score += 2
+
+        reasons.append(
+            "BTC market neutral"
+        )
+
     else:
 
-        return None
+        # Do NOT immediately reject.
+        # But no BTC points.
+
+        reasons.append(
+            "BTC market weak"
+        )
 
     return {
         "score": score,
         "price": price,
         "rsi": current_rsi,
         "volume_ratio": volume_ratio,
-        "breakout": breakout_percent,
+        "breakout": breakout,
         "momentum": momentum,
         "atr_percent": atr_percent,
         "atr_value": atr_value,
         "book_ratio": book_ratio,
-        "reasons": reasons,
+        "reasons": reasons
     }
 
 
@@ -616,13 +648,12 @@ print(
 )
 
 print(
-    "ULTRA PRECISION MODE"
+    "ULTRA PRECISION BALANCED"
 )
 
 print(
     "=========================================="
 )
-
 
 if not BOT_TOKEN or not CHAT_ID:
 
@@ -635,13 +666,11 @@ if not BOT_TOKEN or not CHAT_ID:
 
 signals = load_signals()
 
-btc_ok = btc_market_ok()
+btc_state = btc_condition()
 
 print(
     "BTC Market:",
-    "BULLISH"
-    if btc_ok
-    else "WEAK"
+    btc_state
 )
 
 
@@ -691,7 +720,7 @@ pre_candidates = []
 
 for index, symbol in enumerate(
     symbols,
-    1,
+    1
 ):
 
     try:
@@ -699,7 +728,7 @@ for index, symbol in enumerate(
         data5 = get_klines(
             symbol,
             INTERVAL,
-            LIMIT,
+            LIMIT
         )
 
         if not data5:
@@ -714,27 +743,27 @@ for index, symbol in enumerate(
 
         e20 = ema(
             closes,
-            20,
+            20
         )
 
         e50 = ema(
             closes,
-            50,
+            50
         )
 
         if not e20 or not e50:
             continue
 
-        # Basic trend
+        # 5m trend
 
         if not price > e20 > e50:
             continue
 
+        # RSI
+
         current_rsi = rsi(
             closes
         )
-
-        # Strict RSI
 
         if (
             current_rsi is None
@@ -742,6 +771,8 @@ for index, symbol in enumerate(
             or current_rsi > 65
         ):
             continue
+
+        # Volume
 
         volumes = data5["volumes"]
 
@@ -761,6 +792,8 @@ for index, symbol in enumerate(
         if volume_ratio < 1.5:
             continue
 
+        # Momentum
+
         momentum = (
             (price - closes[-6])
             / closes[-6]
@@ -770,30 +803,30 @@ for index, symbol in enumerate(
         if not 0.5 <= momentum <= 4:
             continue
 
-        # Confirmed breakout
+        # Breakout / near breakout
 
         previous_high = max(
             data5["highs"][-21:-1]
         )
 
-        if price <= previous_high:
-            continue
-
-        breakout_percent = (
+        breakout = (
             (price - previous_high)
             / previous_high
             * 100
         )
 
-        # Do not chase large breakout
+        if breakout < -0.10:
+            continue
 
-        if breakout_percent > 1.5:
+        # Avoid chasing
+
+        if breakout > 1.5:
             continue
 
         pre_candidates.append(
             (
                 symbol,
-                data5,
+                data5
             )
         )
 
@@ -802,7 +835,7 @@ for index, symbol in enumerate(
         print(
             "5m error:",
             symbol,
-            e,
+            e
         )
 
     if index % 50 == 0:
@@ -832,13 +865,13 @@ for symbol, data5 in pre_candidates:
         data15 = get_klines(
             symbol,
             CONFIRM_INTERVAL,
-            100,
+            100
         )
 
         if not data15:
             continue
 
-        # 15m mandatory
+        # 15m remains mandatory
 
         if not bullish_trend(data15):
             continue
@@ -846,7 +879,7 @@ for symbol, data5 in pre_candidates:
         data1h = get_klines(
             symbol,
             TREND_INTERVAL,
-            100,
+            100
         )
 
         if not data1h:
@@ -858,25 +891,23 @@ for symbol, data5 in pre_candidates:
             )
         )
 
-        result = calculate_score(
+        result = analyze(
             data5,
             data15,
             data1h,
             book_ratio,
-            btc_ok,
+            btc_state
         )
 
         if not result:
             continue
 
-        score = result["score"]
-
-        if score < MIN_SCORE:
+        if result["score"] < MIN_SCORE:
             continue
 
-        # -------------------------------------------------
+        # =================================================
         # RISK
-        # -------------------------------------------------
+        # =================================================
 
         price = result["price"]
 
@@ -884,7 +915,7 @@ for symbol, data5 in pre_candidates:
 
         risk = max(
             atr_value * 1.2,
-            price * 0.01,
+            price * 0.01
         )
 
         stop = price - risk
@@ -902,7 +933,7 @@ for symbol, data5 in pre_candidates:
                 "stop": stop,
                 "tp1": tp1,
                 "tp2": tp2,
-                "tp3": tp3,
+                "tp3": tp3
             }
         )
 
@@ -915,7 +946,7 @@ for symbol, data5 in pre_candidates:
         print(
             "Candidate error:",
             symbol,
-            e,
+            e
         )
 
 
@@ -927,9 +958,9 @@ candidates.sort(
     key=lambda x: (
         x["score"],
         x["book_ratio"],
-        x["volume_ratio"],
+        x["volume_ratio"]
     ),
-    reverse=True,
+    reverse=True
 )
 
 
@@ -940,7 +971,7 @@ print(
 
 
 # =========================================================
-# SEND
+# SEND TOP 2
 # =========================================================
 
 sent = 0
@@ -956,14 +987,14 @@ for signal in candidates:
 
     last_sent = signals.get(
         symbol,
-        0,
+        0
     )
 
     if now - last_sent < COOLDOWN:
 
         print(
             "Cooldown:",
-            symbol,
+            symbol
         )
 
         continue
@@ -1045,9 +1076,9 @@ for signal in candidates:
         f"Technical analysis only."
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # CHART
-    # -----------------------------------------------------
+    # =====================================================
 
     chart_path = None
 
@@ -1055,7 +1086,7 @@ for signal in candidates:
 
         chart_path = save_chart(
             symbol,
-            INTERVAL,
+            INTERVAL
         )
 
     except Exception as e:
@@ -1063,12 +1094,12 @@ for signal in candidates:
         print(
             "Chart error:",
             symbol,
-            e,
+            e
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # TELEGRAM
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         chart_path
@@ -1079,7 +1110,7 @@ for signal in candidates:
 
         send_photo(
             chart_path,
-            caption,
+            caption
         )
 
     else:
@@ -1099,12 +1130,12 @@ for signal in candidates:
     print(
         "SIGNAL SENT:",
         symbol,
-        score,
+        score
     )
 
 
 # =========================================================
-# END
+# FINISH
 # =========================================================
 
 print(
