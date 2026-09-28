@@ -197,9 +197,15 @@ for i, symbol in enumerate(symbols, 1):
             score += 20
             reasons.append("EMA20 above EMA50")
 
-        if 50 <= r <= 68:
-            score += 20
-            reasons.append(f"RSI {r:.1f}")
+        # فلتر RSI النهائي (Pro 2.2)
+if 50 <= r <= 65:
+    score += 20
+    reasons.append(f"Perfect RSI {r:.1f}")
+elif 65 < r <= 70:
+    score += 10
+    reasons.append(f"High RSI {r:.1f}")
+else:
+    continue
 
         avg_volume = sum(volumes[-21:-1]) / 20
         vr = volumes[-1] / avg_volume if avg_volume else 0
