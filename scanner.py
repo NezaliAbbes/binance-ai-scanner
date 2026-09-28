@@ -1,4 +1,3 @@
-
 import requests
 import pandas as pd
 import numpy as np
@@ -58,38 +57,44 @@ for i, symbol in enumerate(pairs, 1):
 
         stats["total"] += 1
 
-        # RSI
+        # RSI (آخر شمعة مغلقة)
         delta = close.diff()
         gain = delta.clip(lower=0).rolling(14).mean()
         loss = (-delta.clip(upper=0)).rolling(14).mean()
         rs = gain / loss.replace(0, np.nan)
-        rsi = (100 - (100 / (1 + rs))).iloc[-1]
+        rsi = (100 - (100 / (1 + rs))).iloc[-2]
 
         if np.isnan(rsi) or not (45 <= rsi <= 68):
             continue
         stats["rsi"] += 1
 
-        # حجم التداول
-        vol_ratio = vol.iloc[-1] / vol.tail(20).mean()
-        if vol_ratio < 1.8:
+        # حجم التداول (آخر شمعة مغلقة)
+        last_vol = vol.iloc[-2]
+        avg_vol = vol.iloc[-22:-2].mean()
+        vol_ratio = last_vol / avg_vol
+
+        if vol_ratio < 1.3:
             continue
         stats["volume"] += 1
 
         # الاتجاه
-        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-2]
+        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-2]
 
         if ema20 <= ema50:
             continue
         stats["trend"] += 1
 
         # الاختراق
-        if close.iloc[-1] <= high.tail(20).max() * 0.995:
+        last_close = close.iloc[-2]
+        highest20 = high.iloc[-22:-2].max()
+
+        if last_close <= highest20 * 0.998:
             continue
         stats["breakout"] += 1
 
-        entry = close.iloc[-1]
-        stop = low.tail(10).min()
+        entry = last_close
+        stop = low.iloc[-12:-2].min()
         risk = entry - stop
 
         if risk <= 0:
@@ -101,7 +106,11 @@ for i, symbol in enumerate(pairs, 1):
 
         rr = round((tp3 - entry) / risk, 2)
 
-        score = min(vol_ratio * 15, 40) + (68 - abs(rsi - 56)) + 20
+        score = (
+            min(vol_ratio * 20, 40)
+            + (68 - abs(rsi - 56))
+            + 20
+        )
 
         stats["qualified"] += 1
 
