@@ -1,0 +1,71 @@
+from indicators import ema, rsi, macd
+
+MIN_SCORE = 60
+
+def analyze(symbol, klines):
+    if len(klines) < 60:
+        return None
+
+    closes = [float(k[4]) for k in klines]
+    highs = [float(k[2]) for k in klines]
+    lows = [float(k[3]) for k in klines]
+    volumes = [float(k[5]) for k in klines]
+
+    price = closes[-1]
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    rsi_value = rsi(closes)
+    macd_line, macd_signal = macd(closes)
+
+    if None in (ema20, ema50, rsi_value, macd_line, macd_signal):
+        return None
+
+    score = 0
+    reasons = []
+
+    if price > ema20:
+        score += 20
+        reasons.append("Price above EMA20")
+
+    if ema20 > ema50:
+        score += 20
+        reasons.append("EMA20 above EMA50")
+
+    if 50 <= rsi_value <= 68:
+        score += 20
+        reasons.append(f"RSI {rsi_value:.1f}")
+
+    if macd_line > macd_signal:
+        score += 20
+        reasons.append("MACD bullish")
+
+    avg_volume = sum(volumes[-21:-1]) / 20
+    volume_ratio = volumes[-1] / avg_volume if avg_volume else 0
+
+    if volume_ratio >= 1.5:
+        score += 10
+        reasons.append(f"Volume x{volume_ratio:.2f}")
+
+    momentum = ((price / closes[-6]) - 1) * 100
+
+    stop = min(lows[-20:])
+    risk = price - stop
+
+    if risk <= 0:
+        return None
+
+    return {
+        "symbol": symbol,
+        "price": price,
+        "score": score,
+        "entry_low": price * 0.995,
+        "entry_high": price * 1.005,
+        "stop": stop,
+        "tp1": price + risk * 1.5,
+        "tp2": price + risk * 2,
+        "tp3": price + risk * 3,
+        "rsi": rsi_value,
+        "volume": volume_ratio,
+        "momentum": momentum,
+        "reasons": reasons
+    } if score >= MIN_SCORE else None
