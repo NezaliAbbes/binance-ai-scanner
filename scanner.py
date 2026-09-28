@@ -1,3 +1,4 @@
+
 import os
 import time
 import requests
@@ -19,12 +20,9 @@ def send_photo(photo_path, caption):
     with open(photo_path, "rb") as img:
         session.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            data={
-                "chat_id": CHAT_ID,
-                "caption": caption
-            },
+            data={"chat_id": CHAT_ID, "caption": caption},
             files={"photo": img},
-            timeout=20
+            timeout=20,
         )
 
 
@@ -37,13 +35,10 @@ def get_json(endpoint, params=None):
 def ema(values, period):
     if len(values) < period:
         return None
-
     value = sum(values[:period]) / period
     k = 2 / (period + 1)
-
     for p in values[period:]:
         value = (p - value) * k + value
-
     return value
 
 
@@ -90,17 +85,12 @@ print(f"Pairs: {len(symbols)}")
 signals = []
 
 for i, symbol in enumerate(symbols, 1):
-
     print(f"[{i}/{len(symbols)}] {symbol}")
 
     try:
         klines = get_json(
             "/api/v3/klines",
-            {
-                "symbol": symbol,
-                "interval": INTERVAL,
-                "limit": LIMIT,
-            },
+            {"symbol": symbol, "interval": INTERVAL, "limit": LIMIT},
         )
 
         closes = [float(k[4]) for k in klines]
@@ -165,20 +155,22 @@ for i, symbol in enumerate(symbols, 1):
         tp3 = price + risk * 3
 
         if score >= MIN_SCORE:
-            signals.append({
-                "symbol": symbol,
-                "price": price,
-                "score": min(score, 100),
-                "rsi": r,
-                "volume": vr,
-                "momentum": momentum,
-                "stop": stop,
-                "tp1": tp1,
-                "tp2": tp2,
-                "tp3": tp3,
-                "klines": klines,
-                "reasons": reasons
-            })
+            signals.append(
+                {
+                    "symbol": symbol,
+                    "price": price,
+                    "score": min(score, 100),
+                    "rsi": r,
+                    "volume": vr,
+                    "momentum": momentum,
+                    "stop": stop,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "klines": klines,
+                    "reasons": reasons,
+                }
+            )
 
     except Exception as e:
         print(symbol, e)
@@ -190,9 +182,28 @@ signals.sort(key=lambda x: x["score"], reverse=True)
 print(f"Signals found: {len(signals)}")
 
 for s in signals[:MAX_SIGNALS]:
-
     filename = f"{s['symbol']}.png"
     save_chart(s, s["klines"], filename)
 
-    caption = (
-        "🚨
+    caption = f"""🚨 BINANCE SPOT SIGNAL 🚨
+
+🪙 Coin: {s['symbol']}
+💰 Price: {s['price']:g}
+📊 Score: {s['score']}/100
+📈 RSI: {s['rsi']:.1f}
+📊 Volume: x{s['volume']:.2f}
+🔥 Momentum: {s['momentum']:+.2f}%
+
+🛑 Stop: {s['stop']:g}
+🎯 TP1: {s['tp1']:g}
+🎯 TP2: {s['tp2']:g}
+🎯 TP3: {s['tp3']:g}
+
+📌 Reasons:
+{chr(10).join("✅ " + r for r in s["reasons"])}
+"""
+
+    send_photo(filename, caption)
+    print("Sent:", s["symbol"])
+
+print("SCAN COMPLETED")
