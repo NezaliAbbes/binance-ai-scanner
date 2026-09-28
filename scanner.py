@@ -27,7 +27,7 @@ def send_photo(photo_path, caption):
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
             data={"chat_id": CHAT_ID, "caption": caption},
             files={"photo": img},
-            timeout=20
+            timeout=20,
         )
 
 
@@ -96,8 +96,8 @@ def confirm_trend(symbol):
             {
                 "symbol": symbol,
                 "interval": CONFIRM_INTERVAL,
-                "limit": 60
-            }
+                "limit": 60,
+            },
         )
 
         closes = [float(k[4]) for k in klines]
@@ -111,7 +111,7 @@ def confirm_trend(symbol):
 
         return closes[-1] > e20 and e20 > e50 and r > 50
 
-    except:
+    except Exception:
         return False
 
 
@@ -122,8 +122,8 @@ def btc_market_ok():
             {
                 "symbol": "BTCUSDT",
                 "interval": "15m",
-                "limit": 60
-            }
+                "limit": 60,
+            },
         )
 
         closes = [float(k[4]) for k in klines]
@@ -134,11 +134,11 @@ def btc_market_ok():
 
         return closes[-1] > e20 and e20 > e50 and r > 50
 
-    except:
+    except Exception:
         return True
 
 
-print("BINANCE AI SCANNER PRO 2.1 STARTED")
+print("BINANCE AI SCANNER PRO 2.2 STARTED")
 
 market_ok = btc_market_ok()
 
@@ -162,13 +162,14 @@ for i, symbol in enumerate(symbols, 1):
     print(f"[{i}/{len(symbols)}] {symbol}")
 
     try:
+
         klines = get_json(
             "/api/v3/klines",
             {
                 "symbol": symbol,
                 "interval": INTERVAL,
-                "limit": LIMIT
-            }
+                "limit": LIMIT,
+            },
         )
 
         closes = [float(k[4]) for k in klines]
@@ -238,26 +239,29 @@ for i, symbol in enumerate(symbols, 1):
         tp2 = price + risk * 2
         tp3 = price + risk * 3
 
-        reward = ((tp1 - price) / price) * 100
+        reward_percent = ((tp1 - price) / price) * 100
 
-        if reward < 2:
+        if reward_percent < 2:
             continue
 
         if score >= MIN_SCORE and confirm_trend(symbol):
-            signals.append({
-                "symbol": symbol,
-                "price": price,
-                "score": min(score, 100),
-                "rsi": r,
-                "volume": vr,
-                "momentum": momentum,
-                "stop": stop,
-                "tp1": tp1,
-                "tp2": tp2,
-                "tp3": tp3,
-                "klines": klines,
-                "reasons": reasons
-            })
+
+            signals.append(
+                {
+                    "symbol": symbol,
+                    "price": price,
+                    "score": min(score, 100),
+                    "rsi": r,
+                    "volume": vr,
+                    "momentum": momentum,
+                    "stop": stop,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "klines": klines,
+                    "reasons": reasons,
+                }
+            )
 
     except Exception as e:
         print(symbol, e)
@@ -281,7 +285,18 @@ for s in signals[:MAX_SIGNALS]:
 
     save_chart(s, s["klines"], filename)
 
-    caption = f"""🚀 STRONG BUY
+    reward = s["tp1"] - s["price"]
+    risk_value = s["price"] - s["stop"]
+    rr = reward / risk_value if risk_value > 0 else 0
+
+    if rr >= 2:
+        label = "🟢 STRONG BUY"
+    elif rr >= 1.5:
+        label = "🟡 GOOD SETUP"
+    else:
+        continue
+
+    caption = f"""{label}
 
 🪙 {s['symbol']}
 💰 Price: {s['price']:g}
@@ -294,6 +309,7 @@ for s in signals[:MAX_SIGNALS]:
 🎯 TP1: {s['tp1']:g}
 🎯 TP2: {s['tp2']:g}
 🎯 TP3: {s['tp3']:g}
+⚖️ Risk/Reward: 1:{rr:.2f}
 
 📌 Reasons:
 {chr(10).join("✅ " + r for r in s["reasons"])}
