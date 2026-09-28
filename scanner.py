@@ -2,14 +2,13 @@ import requests
 import pandas as pd
 import numpy as np
 
-BASE = "https://api.binance.com"
+BASE = "https://data-api.binance.vision"
 
-print("="*50)
+print("=" * 50)
 print("BINANCE AI SCANNER")
 print("FAST PRECISION MODE")
-print("="*50)
+print("=" * 50)
 
-# عدادات التشخيص
 stats = {
     "total": 0,
     "rsi": 0,
@@ -21,11 +20,19 @@ stats = {
 
 best = []
 
-# أزواج USDT
-pairs = [
-    s["symbol"] for s in requests.get(f"{BASE}/api/v3/exchangeInfo").json()["symbols"]
-    if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
-]
+# جلب أزواج USDT
+try:
+    r = requests.get(f"{BASE}/api/v3/exchangeInfo", timeout=20)
+    r.raise_for_status()
+    data = r.json()
+
+    pairs = [
+        s["symbol"] for s in data["symbols"]
+        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
+    ]
+except Exception as e:
+    print(f"ERROR loading pairs: {e}")
+    exit()
 
 print(f"USDT Spot pairs: {len(pairs)}")
 
@@ -34,12 +41,15 @@ for i, symbol in enumerate(pairs, 1):
         kl = requests.get(
             f"{BASE}/api/v3/klines?symbol={symbol}&interval=15m&limit=120",
             timeout=10
-        ).json()
+        )
+        kl.raise_for_status()
+        kl = kl.json()
 
-        if not isinstance(kl, list):
+        if not isinstance(kl, list) or len(kl) < 60:
             continue
 
         df = pd.DataFrame(kl)
+
         close = df[4].astype(float)
         high = df[2].astype(float)
         low = df[3].astype(float)
@@ -65,8 +75,9 @@ for i, symbol in enumerate(pairs, 1):
         stats["volume"] += 1
 
         # الاتجاه
-        ema20 = close.ewm(span=20).mean().iloc[-1]
-        ema50 = close.ewm(span=50).mean().iloc[-1]
+        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+
         if ema20 <= ema50:
             continue
         stats["trend"] += 1
@@ -87,13 +98,13 @@ for i, symbol in enumerate(pairs, 1):
         tp2 = entry + risk * 2.5
         tp3 = entry + risk * 4
 
-        score = (
-            min(vol_ratio * 15, 40) +
-            (68 - abs(rsi - 56)) +
-            20
-        )
-
         rr = round((tp3 - entry) / risk, 2)
+
+        score = (
+            min(vol_ratio * 15, 40)
+            + (68 - abs(rsi - 56))
+            + 20
+        )
 
         stats["qualified"] += 1
 
@@ -102,41 +113,4 @@ for i, symbol in enumerate(pairs, 1):
             "score": round(score),
             "rsi": round(rsi, 1),
             "vol": round(vol_ratio, 2),
-            "entry": round(entry, 6),
-            "stop": round(stop, 6),
-            "tp1": round(tp1, 6),
-            "tp2": round(tp2, 6),
-            "tp3": round(tp3, 6),
-            "rr": rr
-        })
-
-    except:
-        pass
-
-    if i % 100 == 0:
-        print(f"Scanned: {i}/{len(pairs)}")
-
-best = sorted(best, key=lambda x: x["score"], reverse=True)
-
-print("\n" + "="*50)
-print("DIAGNOSTIC")
-print("="*50)
-print(f"Total scanned : {stats['total']}")
-print(f"Passed RSI    : {stats['rsi']}")
-print(f"Passed Volume : {stats['volume']}")
-print(f"Passed Trend  : {stats['trend']}")
-print(f"Passed Breakout: {stats['breakout']}")
-print(f"Qualified     : {stats['qualified']}")
-
-print("\n" + "="*50)
-print("TOP OPPORTUNITIES")
-print("="*50)
-
-if not best:
-    print("No qualified signals.")
-else:
-    for s in best[:10]:
-        print(
-            f"{s['symbol']} | Score {s['score']} | RSI {s['rsi']} | "
-            f"Vol x{s['vol']} | RR 1:{s['rr']}"
-        )
+            "entry": round(entry,
