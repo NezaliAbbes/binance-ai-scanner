@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-BINANCE_BASE = "https://api.binance.com"
+BINANCE_BASE = "https://data-api.binance.vision"
 
 INTERVAL = "5m"
 KLINE_LIMIT = 120
