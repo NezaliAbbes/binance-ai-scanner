@@ -1,20 +1,34 @@
 import os
-import time
 import requests
-from datetime import datetime, timezone
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-BINANCE_BASE = "https://data-api.binance.vision"
+print("BINANCE AI SCANNER STARTED")
+print("BOT_TOKEN:", "OK" if BOT_TOKEN else "MISSING")
+print("CHAT_ID:", "OK" if CHAT_ID else "MISSING")
 
-INTERVAL = "5m"
-KLINE_LIMIT = 120
+try:
+    response = requests.get(
+        "https://data-api.binance.vision/api/v3/exchangeInfo",
+        timeout=15
+    )
 
-MIN_SCORE = 60
-MIN_QUOTE_VOLUME = 1000000
-MAX_SIGNALS = 5
+    print("Binance status:", response.status_code)
 
-TIMEOUT = 15
+    if response.ok:
+        data = response.json()
+        symbols = [
+            x["symbol"]
+            for x in data["symbols"]
+            if x.get("quoteAsset") == "USDT"
+            and x.get("status") == "TRADING"
+        ]
 
-session =
+        print("USDT Spot pairs:", len(symbols))
+
+    else:
+        print("Binance error:", response.text)
+
+except Exception as e:
+    print("ERROR:", e)
