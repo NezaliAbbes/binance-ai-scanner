@@ -6,105 +6,491 @@ import json
 import time
 
 BASE = "https://data-api.binance.vision"
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 HISTORY_FILE = "signals.json"
 
-print("=" * 50)
-print("BINANCE AI SCANNER PRO 2.4")
-print("=" * 50)
+# ============================================================
+# SETTINGS
+# ============================================================
 
-# تحميل سجل الإشارات
+MIN_SCORE = 80
+COOLDOWN = 21600  # 6 hours
+
+print("=" * 55)
+print("BINANCE AI SCANNER PRO 3.0")
+print("=" * 55)
+
+# ============================================================
+# LOAD HISTORY
+# ============================================================
+
 if os.path.exists(HISTORY_FILE):
-    with open(HISTORY_FILE, "r") as f:
-        history = json.load(f)
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            history = json.load(f)
+    except Exception:
+        history = {}
 else:
     history = {}
 
-# جلب أزواج USDT
+# ============================================================
+# GET USDT SPOT PAIRS
+# ============================================================
+
 try:
-    data = requests.get(f"{BASE}/api/v3/exchangeInfo", timeout=20).json()
+    response = requests.get(
+        f"{BASE}/api/v3/exchangeInfo",
+        timeout=20
+    )
+
+    data = response.json()
+
     pairs = [
-        s["symbol"] for s in data["symbols"]
-        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
+        s["symbol"]
+        for s in data["symbols"]
+        if s["quoteAsset"] == "USDT"
+        and s["status"] == "TRADING"
+        and s["isSpotTradingAllowed"] is True
     ]
+
 except Exception as e:
     print("ExchangeInfo Error:", e)
     raise SystemExit
 
 print(f"USDT Spot pairs: {len(pairs)}")
 
+# ============================================================
+# FUNCTIONS
+# ============================================================
+
+def calculate_rsi(close, period=14):
+    delta = close.diff()
+
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+
+    return 100 - (100 / (1 + rs))
+
+
+def calculate_atr(high, low, close, period=14):
+
+    previous_close = close.shift(1)
+
+    tr1 = high - low
+    tr2 = (high - previous_close).abs()
+    tr3 = (low - previous_close).abs()
+
+    true_range = pd.concat(
+        [tr1, tr2, tr3],
+        axis=1
+    ).max(axis=1)
+
+    return true_range.rolling(period).mean()
+
+
+def calculate_adx(high, low, close, period=14):
+
+    up_move = high.diff()
+    down_move = -low.diff()
+
+    plus_dm = np.where(
+        (up_move > down_move) & (up_move > 0),
+        up_move,
+        0
+    )
+
+    minus_dm = np.where(
+        (down_move > up_move) & (down_move > 0),
+        down_move,
+        0
+    )
+
+    atr = calculate_atr(
+        high,
+        low,
+        close,
+        period
+    )
+
+    plus_di = (
+        100 *
+        pd.Series(plus_dm).rolling(period).mean()
+        / atr
+    )
+
+    minus_di = (
+        100 *
+        pd.Series(minus_dm).rolling(period).mean()
+        / atr
+    )
+
+    dx = (
+        100 *
+        (plus_di - minus_di).abs()
+        / (plus_di + minus_di).replace(0, np.nan)
+    )
+
+    adx = dx.rolling(period).mean()
+
+    return adx
+
+
+def calculate_macd(close):
+
+    ema12 = close.ewm(
+        span=12,
+        adjust=False
+    ).mean()
+
+    ema26 = close.ewm(
+        span=26,
+        adjust=False
+    ).mean()
+
+    macd = ema12 - ema26
+
+    signal = macd.ewm(
+        span=9,
+        adjust=False
+    ).mean()
+
+    histogram = macd - signal
+
+    return macd, signal, histogram
+
+
+# ============================================================
+# SCANNER
+# ============================================================
+
 best = []
 
 for i, symbol in enumerate(pairs, 1):
+
     try:
+
         kl = requests.get(
-            f"{BASE}/api/v3/klines?symbol={symbol}&interval=15m&limit=120",
+            f"{BASE}/api/v3/klines",
+            params={
+                "symbol": symbol,
+                "interval": "15m",
+                "limit": 150
+            },
             timeout=10
         ).json()
 
-        if not isinstance(kl, list) or len(kl) < 60:
+        if not isinstance(kl, list):
+            continue
+
+        if len(kl) < 100:
             continue
 
         df = pd.DataFrame(kl)
 
-        close = df[4].astype(float)
+        open_price = df[1].astype(float)
         high = df[2].astype(float)
         low = df[3].astype(float)
-        vol = df[5].astype(float)
+        close = df[4].astype(float)
+        volume = df[5].astype(float)
 
+        # ----------------------------------------------------
+        # USE LAST CLOSED CANDLE
+        # ----------------------------------------------------
+
+        idx = -2
+
+        current = close.iloc[idx]
+        previous = close.iloc[idx - 1]
+
+        # ----------------------------------------------------
         # RSI
-        delta = close.diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
-        rs = gain / loss.replace(0, np.nan)
-        rsi = (100 - (100 / (1 + rs))).iloc[-2]
+        # ----------------------------------------------------
 
-        if np.isnan(rsi) or not (45 <= rsi <= 68):
+        rsi_series = calculate_rsi(close)
+
+        rsi = rsi_series.iloc[idx]
+
+        if np.isnan(rsi):
             continue
 
-        # Volume
-        last_vol = vol.iloc[-2]
-        avg_vol = vol.iloc[-22:-2].mean()
-        vol_ratio = last_vol / avg_vol
-
-        if vol_ratio < 1.3:
+        # Avoid weak/overheated RSI
+        if not (50 <= rsi <= 68):
             continue
 
-        # Trend
-        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-2]
-        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-2]
+        # ----------------------------------------------------
+        # VOLUME
+        # ----------------------------------------------------
 
-        if ema20 <= ema50:
+        avg_volume = volume.iloc[-22:-2].mean()
+
+        if avg_volume <= 0:
             continue
 
-        # Breakout
-        last_close = close.iloc[-2]
+        volume_ratio = volume.iloc[idx] / avg_volume
+
+        if volume_ratio < 1.5:
+            continue
+
+        # ----------------------------------------------------
+        # EMA
+        # ----------------------------------------------------
+
+        ema20 = close.ewm(
+            span=20,
+            adjust=False
+        ).mean()
+
+        ema50 = close.ewm(
+            span=50,
+            adjust=False
+        ).mean()
+
+        ema20_now = ema20.iloc[idx]
+        ema50_now = ema50.iloc[idx]
+
+        if ema20_now <= ema50_now:
+            continue
+
+        # EMA distance
+        ema_distance = (
+            (ema20_now - ema50_now)
+            / ema50_now
+        ) * 100
+
+        # ----------------------------------------------------
+        # MACD
+        # ----------------------------------------------------
+
+        macd, macd_signal, macd_hist = calculate_macd(close)
+
+        macd_now = macd.iloc[idx]
+        signal_now = macd_signal.iloc[idx]
+        hist_now = macd_hist.iloc[idx]
+
+        if np.isnan(hist_now):
+            continue
+
+        if macd_now <= signal_now:
+            continue
+
+        # ----------------------------------------------------
+        # ADX
+        # ----------------------------------------------------
+
+        adx_series = calculate_adx(
+            high,
+            low,
+            close
+        )
+
+        adx = adx_series.iloc[idx]
+
+        if np.isnan(adx):
+            continue
+
+        # We want an actual trend
+        if adx < 18:
+            continue
+
+        # ----------------------------------------------------
+        # BREAKOUT
+        # ----------------------------------------------------
+
         highest20 = high.iloc[-22:-2].max()
 
-        if last_close <= highest20 * 0.998:
+        breakout_strength = (
+            (current - highest20)
+            / highest20
+        ) * 100
+
+        # Must actually break resistance
+        if current <= highest20:
             continue
 
-        entry = last_close
-        stop = low.iloc[-12:-2].min()
-        risk = entry - stop
+        # ----------------------------------------------------
+        # CANDLE STRENGTH
+        # ----------------------------------------------------
+
+        candle_open = open_price.iloc[idx]
+        candle_high = high.iloc[idx]
+        candle_low = low.iloc[idx]
+
+        candle_range = candle_high - candle_low
+
+        if candle_range <= 0:
+            continue
+
+        body = abs(current - candle_open)
+
+        body_ratio = body / candle_range
+
+        # Bullish candle
+        if current <= candle_open:
+            continue
+
+        # Avoid very weak candles
+        if body_ratio < 0.45:
+            continue
+
+        # ----------------------------------------------------
+        # ATR
+        # ----------------------------------------------------
+
+        atr_series = calculate_atr(
+            high,
+            low,
+            close
+        )
+
+        atr = atr_series.iloc[idx]
+
+        if np.isnan(atr) or atr <= 0:
+            continue
+
+        # ----------------------------------------------------
+        # STOP
+        # ----------------------------------------------------
+
+        recent_low = low.iloc[-12:-2].min()
+
+        stop = recent_low
+
+        risk = current - stop
 
         if risk <= 0:
             continue
 
+        # Avoid extremely wide stop
+        if risk > atr * 3:
+            continue
+
+        # ----------------------------------------------------
+        # TARGETS
+        # ----------------------------------------------------
+
+        entry = current
+
         tp1 = entry + risk * 1.5
         tp2 = entry + risk * 2.5
-        tp3 = entry + risk * 4
+        tp3 = entry + risk * 4.0
 
-        volume_score = min(vol_ratio * 15, 35)
-        rsi_score = max(0, 35 - abs(rsi - 56) * 2)
-        score = min(round(volume_score + rsi_score + 15 + 15), 100)
+        # ----------------------------------------------------
+        # SCORE
+        # ====================================================
+        #
+        # MAXIMUM = 100
+        #
+        # Volume       25
+        # RSI          15
+        # EMA Trend    15
+        # MACD         15
+        # ADX          10
+        # Breakout     10
+        # Candle       10
+        #
+        # ----------------------------------------------------
+
+        # Volume score
+        volume_score = min(
+            (volume_ratio / 3.0) * 25,
+            25
+        )
+
+        # RSI score
+        # Best zone around 55-62
+        rsi_distance = abs(rsi - 58)
+
+        rsi_score = max(
+            0,
+            15 - rsi_distance * 1.5
+        )
+
+        # EMA trend score
+        if ema_distance >= 1.5:
+            ema_score = 15
+        elif ema_distance >= 0.8:
+            ema_score = 12
+        elif ema_distance >= 0.3:
+            ema_score = 9
+        else:
+            ema_score = 6
+
+        # MACD score
+        if hist_now > 0:
+            macd_strength = abs(hist_now)
+
+            if macd_strength > abs(macd_now) * 0.20:
+                macd_score = 15
+            elif macd_strength > abs(macd_now) * 0.10:
+                macd_score = 12
+            else:
+                macd_score = 9
+        else:
+            macd_score = 0
+
+        # ADX score
+        if adx >= 30:
+            adx_score = 10
+        elif adx >= 25:
+            adx_score = 8
+        elif adx >= 20:
+            adx_score = 6
+        else:
+            adx_score = 4
+
+        # Breakout score
+        if breakout_strength >= 1.0:
+            breakout_score = 10
+        elif breakout_strength >= 0.5:
+            breakout_score = 8
+        elif breakout_strength >= 0.2:
+            breakout_score = 6
+        else:
+            breakout_score = 4
+
+        # Candle score
+        if body_ratio >= 0.75:
+            candle_score = 10
+        elif body_ratio >= 0.60:
+            candle_score = 8
+        elif body_ratio >= 0.45:
+            candle_score = 6
+        else:
+            candle_score = 3
+
+        score = round(
+            volume_score
+            + rsi_score
+            + ema_score
+            + macd_score
+            + adx_score
+            + breakout_score
+            + candle_score
+        )
+
+        score = min(score, 100)
+
+        # ----------------------------------------------------
+        # FINAL FILTER
+        # ----------------------------------------------------
+
+        if score < MIN_SCORE:
+            continue
 
         best.append({
             "symbol": symbol,
             "score": score,
             "rsi": round(rsi, 1),
-            "vol": round(vol_ratio, 2),
+            "vol": round(volume_ratio, 2),
+            "adx": round(adx, 1),
             "entry": entry,
             "stop": stop,
             "tp1": tp1,
@@ -116,51 +502,137 @@ for i, symbol in enumerate(pairs, 1):
         continue
 
     if i % 100 == 0:
-        print(f"Scanned: {i}/{len(pairs)}")
+        print(
+            f"Scanned: {i}/{len(pairs)}"
+        )
 
-best = sorted(best, key=lambda x: x["score"], reverse=True)
+# ============================================================
+# SORT
+# ============================================================
 
-print("\nQualified:", len(best))
+best = sorted(
+    best,
+    key=lambda x: x["score"],
+    reverse=True
+)
 
-# تشخيص تيليغرام
+print()
+print(f"Qualified signals: {len(best)}")
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+
 if not TOKEN:
-    print("❌ Missing TELEGRAM_BOT_TOKEN")
+
+    print(
+        "❌ Missing TELEGRAM_BOT_TOKEN"
+    )
+
 elif not CHAT_ID:
-    print("❌ Missing TELEGRAM_CHAT_ID")
+
+    print(
+        "❌ Missing TELEGRAM_CHAT_ID"
+    )
+
 elif not best:
-    print("No qualified signal.")
+
+    print(
+        "No signal above minimum score."
+    )
+
 else:
+
     s = best[0]
+
     now = time.time()
 
-    if s["symbol"] in history and now - history[s["symbol"]] < 21600:
-        print("Signal already sent recently.")
+    # --------------------------------------------------------
+    # COOLDOWN
+    # --------------------------------------------------------
+
+    if (
+        s["symbol"] in history
+        and now - history[s["symbol"]] < COOLDOWN
+    ):
+
+        print(
+            "Signal already sent recently:",
+            s["symbol"]
+        )
+
     else:
+
         message = (
             "🚀 BINANCE AI SIGNAL\n\n"
+
             f"Pair: {s['symbol']}\n"
+
             f"Score: {s['score']}/100\n"
+
             f"RSI: {s['rsi']}\n"
-            f"Volume: x{s['vol']}\n\n"
+
+            f"Volume: x{s['vol']}\n"
+
+            f"ADX: {s['adx']}\n\n"
+
             f"Entry: {s['entry']:.6f}\n"
+
             f"Stop: {s['stop']:.6f}\n"
+
             f"TP1: {s['tp1']:.6f}\n"
+
             f"TP2: {s['tp2']:.6f}\n"
+
             f"TP3: {s['tp3']:.6f}"
         )
 
-        r = requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": message},
-            timeout=20
-        )
+        try:
 
-        print("Telegram API:", r.status_code)
+            r = requests.post(
+                f"https://api.telegram.org/"
+                f"bot{TOKEN}/sendMessage",
 
-        if r.status_code == 200:
-            print("✅ Telegram sent.")
-            history[s["symbol"]] = now
-            with open(HISTORY_FILE, "w") as f:
-                json.dump(history, f)
-        else:
-            print(r.text)
+                data={
+                    "chat_id": CHAT_ID,
+                    "text": message
+                },
+
+                timeout=20
+            )
+
+            print(
+                "Telegram API:",
+                r.status_code
+            )
+
+            if r.status_code == 200:
+
+                print(
+                    "✅ Telegram sent."
+                )
+
+                history[s["symbol"]] = now
+
+                with open(
+                    HISTORY_FILE,
+                    "w"
+                ) as f:
+
+                    json.dump(
+                        history,
+                        f
+                    )
+
+            else:
+
+                print(
+                    r.text
+                )
+
+        except Exception as e:
+
+            print(
+                "Telegram Error:",
+                e
+            )
