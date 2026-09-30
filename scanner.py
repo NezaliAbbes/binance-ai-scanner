@@ -16,15 +16,15 @@ HISTORY_FILE = "signals.json"
 # SETTINGS
 # ============================================================
 
-MIN_SCORE = 80
+MIN_SCORE = 72
 COOLDOWN = 21600  # 6 hours
 
 print("=" * 55)
-print("BINANCE AI SCANNER PRO 3.0")
+print("BINANCE AI SCANNER PRO 3.1")
 print("=" * 55)
 
 # ============================================================
-# LOAD HISTORY
+# HISTORY
 # ============================================================
 
 if os.path.exists(HISTORY_FILE):
@@ -37,7 +37,7 @@ else:
     history = {}
 
 # ============================================================
-# GET USDT SPOT PAIRS
+# BINANCE SPOT PAIRS
 # ============================================================
 
 try:
@@ -53,7 +53,7 @@ try:
         for s in data["symbols"]
         if s["quoteAsset"] == "USDT"
         and s["status"] == "TRADING"
-        and s["isSpotTradingAllowed"] is True
+        and s.get("isSpotTradingAllowed", False)
     ]
 
 except Exception as e:
@@ -63,10 +63,11 @@ except Exception as e:
 print(f"USDT Spot pairs: {len(pairs)}")
 
 # ============================================================
-# FUNCTIONS
+# INDICATORS
 # ============================================================
 
-def calculate_rsi(close, period=14):
+def rsi_calc(close, period=14):
+
     delta = close.diff()
 
     gain = delta.clip(lower=0)
@@ -80,70 +81,23 @@ def calculate_rsi(close, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def calculate_atr(high, low, close, period=14):
+def atr_calc(high, low, close, period=14):
 
-    previous_close = close.shift(1)
+    prev_close = close.shift(1)
 
     tr1 = high - low
-    tr2 = (high - previous_close).abs()
-    tr3 = (low - previous_close).abs()
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
 
-    true_range = pd.concat(
+    tr = pd.concat(
         [tr1, tr2, tr3],
         axis=1
     ).max(axis=1)
 
-    return true_range.rolling(period).mean()
+    return tr.rolling(period).mean()
 
 
-def calculate_adx(high, low, close, period=14):
-
-    up_move = high.diff()
-    down_move = -low.diff()
-
-    plus_dm = np.where(
-        (up_move > down_move) & (up_move > 0),
-        up_move,
-        0
-    )
-
-    minus_dm = np.where(
-        (down_move > up_move) & (down_move > 0),
-        down_move,
-        0
-    )
-
-    atr = calculate_atr(
-        high,
-        low,
-        close,
-        period
-    )
-
-    plus_di = (
-        100 *
-        pd.Series(plus_dm).rolling(period).mean()
-        / atr
-    )
-
-    minus_di = (
-        100 *
-        pd.Series(minus_dm).rolling(period).mean()
-        / atr
-    )
-
-    dx = (
-        100 *
-        (plus_di - minus_di).abs()
-        / (plus_di + minus_di).replace(0, np.nan)
-    )
-
-    adx = dx.rolling(period).mean()
-
-    return adx
-
-
-def calculate_macd(close):
+def macd_calc(close):
 
     ema12 = close.ewm(
         span=12,
@@ -167,17 +121,67 @@ def calculate_macd(close):
     return macd, signal, histogram
 
 
+def adx_calc(high, low, close, period=14):
+
+    up = high.diff()
+    down = -low.diff()
+
+    plus_dm = np.where(
+        (up > down) & (up > 0),
+        up,
+        0
+    )
+
+    minus_dm = np.where(
+        (down > up) & (down > 0),
+        down,
+        0
+    )
+
+    atr = atr_calc(
+        high,
+        low,
+        close,
+        period
+    )
+
+    plus_di = (
+        100 *
+        pd.Series(plus_dm).rolling(period).mean()
+        / atr
+    )
+
+    minus_di = (
+        100 *
+        pd.Series(minus_dm).rolling(period).mean()
+        / atr
+    )
+
+    denominator = (
+        plus_di + minus_di
+    ).replace(0, np.nan)
+
+    dx = (
+        100 *
+        (plus_di - minus_di).abs()
+        / denominator
+    )
+
+    return dx.rolling(period).mean()
+
+
 # ============================================================
 # SCANNER
 # ============================================================
 
-best = []
+candidates = []
+best_raw = []
 
 for i, symbol in enumerate(pairs, 1):
 
     try:
 
-        kl = requests.get(
+        response = requests.get(
             f"{BASE}/api/v3/klines",
             params={
                 "symbol": symbol,
@@ -185,7 +189,9 @@ for i, symbol in enumerate(pairs, 1):
                 "limit": 150
             },
             timeout=10
-        ).json()
+        )
+
+        kl = response.json()
 
         if not isinstance(kl, list):
             continue
@@ -202,27 +208,25 @@ for i, symbol in enumerate(pairs, 1):
         volume = df[5].astype(float)
 
         # ----------------------------------------------------
-        # USE LAST CLOSED CANDLE
+        # LAST CLOSED CANDLE
         # ----------------------------------------------------
 
         idx = -2
 
-        current = close.iloc[idx]
-        previous = close.iloc[idx - 1]
+        entry = close.iloc[idx]
 
         # ----------------------------------------------------
         # RSI
         # ----------------------------------------------------
 
-        rsi_series = calculate_rsi(close)
-
+        rsi_series = rsi_calc(close)
         rsi = rsi_series.iloc[idx]
 
         if np.isnan(rsi):
             continue
 
-        # Avoid weak/overheated RSI
-        if not (50 <= rsi <= 68):
+        # Very broad RSI filter
+        if rsi < 48 or rsi > 70:
             continue
 
         # ----------------------------------------------------
@@ -234,9 +238,12 @@ for i, symbol in enumerate(pairs, 1):
         if avg_volume <= 0:
             continue
 
-        volume_ratio = volume.iloc[idx] / avg_volume
+        volume_ratio = (
+            volume.iloc[idx] /
+            avg_volume
+        )
 
-        if volume_ratio < 1.5:
+        if volume_ratio < 1.30:
             continue
 
         # ----------------------------------------------------
@@ -256,10 +263,10 @@ for i, symbol in enumerate(pairs, 1):
         ema20_now = ema20.iloc[idx]
         ema50_now = ema50.iloc[idx]
 
+        # Main trend filter
         if ema20_now <= ema50_now:
             continue
 
-        # EMA distance
         ema_distance = (
             (ema20_now - ema50_now)
             / ema50_now
@@ -269,23 +276,20 @@ for i, symbol in enumerate(pairs, 1):
         # MACD
         # ----------------------------------------------------
 
-        macd, macd_signal, macd_hist = calculate_macd(close)
+        macd, signal, histogram = macd_calc(close)
 
         macd_now = macd.iloc[idx]
-        signal_now = macd_signal.iloc[idx]
-        hist_now = macd_hist.iloc[idx]
+        signal_now = signal.iloc[idx]
+        hist_now = histogram.iloc[idx]
 
         if np.isnan(hist_now):
-            continue
-
-        if macd_now <= signal_now:
             continue
 
         # ----------------------------------------------------
         # ADX
         # ----------------------------------------------------
 
-        adx_series = calculate_adx(
+        adx_series = adx_calc(
             high,
             low,
             close
@@ -296,55 +300,62 @@ for i, symbol in enumerate(pairs, 1):
         if np.isnan(adx):
             continue
 
-        # We want an actual trend
-        if adx < 18:
+        if adx < 15:
             continue
 
         # ----------------------------------------------------
-        # BREAKOUT
+        # BREAKOUT / RESISTANCE
         # ----------------------------------------------------
 
         highest20 = high.iloc[-22:-2].max()
 
-        breakout_strength = (
-            (current - highest20)
+        distance_to_resistance = (
+            (entry - highest20)
             / highest20
         ) * 100
 
-        # Must actually break resistance
-        if current <= highest20:
+        # We allow near-breakouts
+        # Price cannot be more than 0.8% below resistance
+
+        if distance_to_resistance < -0.8:
             continue
 
         # ----------------------------------------------------
-        # CANDLE STRENGTH
+        # CANDLE
         # ----------------------------------------------------
 
         candle_open = open_price.iloc[idx]
         candle_high = high.iloc[idx]
         candle_low = low.iloc[idx]
 
-        candle_range = candle_high - candle_low
+        candle_range = (
+            candle_high - candle_low
+        )
 
         if candle_range <= 0:
             continue
 
-        body = abs(current - candle_open)
+        body = abs(
+            entry - candle_open
+        )
 
-        body_ratio = body / candle_range
+        body_ratio = (
+            body /
+            candle_range
+        )
 
-        # Bullish candle
-        if current <= candle_open:
+        # Must be bullish
+        if entry <= candle_open:
             continue
 
-        # Avoid very weak candles
-        if body_ratio < 0.45:
+        if body_ratio < 0.30:
             continue
 
         # ----------------------------------------------------
         # ATR
         # ----------------------------------------------------
 
-        atr_series = calculate_atr(
+        atr_series = atr_calc(
             high,
             low,
             close
@@ -363,108 +374,163 @@ for i, symbol in enumerate(pairs, 1):
 
         stop = recent_low
 
-        risk = current - stop
+        risk = entry - stop
 
         if risk <= 0:
             continue
 
-        # Avoid extremely wide stop
-        if risk > atr * 3:
+        # Do not allow very wide stop
+        if risk > atr * 3.5:
             continue
 
         # ----------------------------------------------------
         # TARGETS
         # ----------------------------------------------------
 
-        entry = current
-
         tp1 = entry + risk * 1.5
         tp2 = entry + risk * 2.5
         tp3 = entry + risk * 4.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # SCORE
         # ====================================================
-        #
-        # MAXIMUM = 100
-        #
-        # Volume       25
-        # RSI          15
-        # EMA Trend    15
-        # MACD         15
-        # ADX          10
-        # Breakout     10
-        # Candle       10
-        #
+
+        # ----------------------------------------------------
+        # VOLUME / 25
         # ----------------------------------------------------
 
-        # Volume score
         volume_score = min(
             (volume_ratio / 3.0) * 25,
             25
         )
 
-        # RSI score
-        # Best zone around 55-62
-        rsi_distance = abs(rsi - 58)
+        # ----------------------------------------------------
+        # RSI / 15
+        # ----------------------------------------------------
 
-        rsi_score = max(
-            0,
-            15 - rsi_distance * 1.5
-        )
+        if 54 <= rsi <= 62:
+            rsi_score = 15
 
-        # EMA trend score
+        elif 51 <= rsi <= 65:
+            rsi_score = 12
+
+        elif 48 <= rsi <= 68:
+            rsi_score = 9
+
+        else:
+            rsi_score = 6
+
+        # ----------------------------------------------------
+        # EMA TREND / 15
+        # ----------------------------------------------------
+
         if ema_distance >= 1.5:
             ema_score = 15
+
         elif ema_distance >= 0.8:
             ema_score = 12
+
         elif ema_distance >= 0.3:
             ema_score = 9
+
         else:
             ema_score = 6
 
-        # MACD score
-        if hist_now > 0:
+        # ----------------------------------------------------
+        # MACD / 15
+        # ----------------------------------------------------
+
+        if (
+            macd_now > signal_now
+            and hist_now > 0
+        ):
+
             macd_strength = abs(hist_now)
 
-            if macd_strength > abs(macd_now) * 0.20:
+            base = max(
+                abs(macd_now),
+                1e-12
+            )
+
+            ratio = (
+                macd_strength /
+                base
+            )
+
+            if ratio >= 0.20:
                 macd_score = 15
-            elif macd_strength > abs(macd_now) * 0.10:
+
+            elif ratio >= 0.10:
                 macd_score = 12
+
             else:
                 macd_score = 9
-        else:
-            macd_score = 0
 
-        # ADX score
+        elif hist_now > 0:
+
+            macd_score = 7
+
+        else:
+
+            macd_score = 3
+
+        # ----------------------------------------------------
+        # ADX / 10
+        # ----------------------------------------------------
+
         if adx >= 30:
             adx_score = 10
+
         elif adx >= 25:
             adx_score = 8
+
         elif adx >= 20:
-            adx_score = 6
-        else:
-            adx_score = 4
+            adx_score = 7
 
-        # Breakout score
-        if breakout_strength >= 1.0:
+        elif adx >= 15:
+            adx_score = 5
+
+        else:
+            adx_score = 2
+
+        # ----------------------------------------------------
+        # BREAKOUT / 10
+        # ----------------------------------------------------
+
+        if distance_to_resistance >= 1.0:
             breakout_score = 10
-        elif breakout_strength >= 0.5:
-            breakout_score = 8
-        elif breakout_strength >= 0.2:
-            breakout_score = 6
-        else:
-            breakout_score = 4
 
-        # Candle score
+        elif distance_to_resistance >= 0.3:
+            breakout_score = 9
+
+        elif distance_to_resistance >= 0:
+            breakout_score = 8
+
+        elif distance_to_resistance >= -0.3:
+            breakout_score = 7
+
+        else:
+            breakout_score = 5
+
+        # ----------------------------------------------------
+        # CANDLE / 10
+        # ----------------------------------------------------
+
         if body_ratio >= 0.75:
             candle_score = 10
+
         elif body_ratio >= 0.60:
             candle_score = 8
+
         elif body_ratio >= 0.45:
-            candle_score = 6
+            candle_score = 7
+
         else:
-            candle_score = 3
+            candle_score = 5
+
+        # ----------------------------------------------------
+        # FINAL SCORE
+        # ----------------------------------------------------
 
         score = round(
             volume_score
@@ -476,16 +542,12 @@ for i, symbol in enumerate(pairs, 1):
             + candle_score
         )
 
-        score = min(score, 100)
+        score = min(
+            score,
+            100
+        )
 
-        # ----------------------------------------------------
-        # FINAL FILTER
-        # ----------------------------------------------------
-
-        if score < MIN_SCORE:
-            continue
-
-        best.append({
+        candidate = {
             "symbol": symbol,
             "score": score,
             "rsi": round(rsi, 1),
@@ -496,7 +558,14 @@ for i, symbol in enumerate(pairs, 1):
             "tp1": tp1,
             "tp2": tp2,
             "tp3": tp3
-        })
+        }
+
+        # Save every valid candidate
+        best_raw.append(candidate)
+
+        # Only strong candidates
+        if score >= MIN_SCORE:
+            candidates.append(candidate)
 
     except Exception:
         continue
@@ -507,17 +576,54 @@ for i, symbol in enumerate(pairs, 1):
         )
 
 # ============================================================
-# SORT
+# RESULTS
 # ============================================================
 
-best = sorted(
-    best,
+best_raw = sorted(
+    best_raw,
+    key=lambda x: x["score"],
+    reverse=True
+)
+
+candidates = sorted(
+    candidates,
     key=lambda x: x["score"],
     reverse=True
 )
 
 print()
-print(f"Qualified signals: {len(best)}")
+print(
+    f"Valid candidates: {len(best_raw)}"
+)
+
+print(
+    f"Qualified signals: {len(candidates)}"
+)
+
+# ============================================================
+# DIAGNOSTIC
+# ============================================================
+
+if best_raw:
+
+    print()
+    print("TOP 5 SCORES")
+
+    for x in best_raw[:5]:
+
+        print(
+            f"{x['symbol']} | "
+            f"Score {x['score']} | "
+            f"RSI {x['rsi']} | "
+            f"Vol x{x['vol']} | "
+            f"ADX {x['adx']}"
+        )
+
+else:
+
+    print(
+        "No valid candidates found."
+    )
 
 # ============================================================
 # TELEGRAM
@@ -535,7 +641,7 @@ elif not CHAT_ID:
         "❌ Missing TELEGRAM_CHAT_ID"
     )
 
-elif not best:
+elif not candidates:
 
     print(
         "No signal above minimum score."
@@ -543,7 +649,7 @@ elif not best:
 
 else:
 
-    s = best[0]
+    s = candidates[0]
 
     now = time.time()
 
@@ -553,7 +659,8 @@ else:
 
     if (
         s["symbol"] in history
-        and now - history[s["symbol"]] < COOLDOWN
+        and
+        now - history[s["symbol"]] < COOLDOWN
     ):
 
         print(
