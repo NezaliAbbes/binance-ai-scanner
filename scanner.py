@@ -16,11 +16,8 @@ HISTORY_FILE = "signals.json"
 # SETTINGS
 # ============================================================
 
-# Strong signals only
 MIN_SCORE = 90
-
-# 6 hours cooldown per pair
-COOLDOWN = 21600
+COOLDOWN = 21600  # 6 hours
 
 print("=" * 60)
 print("BINANCE AI SCANNER PRO 4.0")
@@ -34,16 +31,13 @@ print("=" * 60)
 if os.path.exists(HISTORY_FILE):
 
     try:
-
         with open(HISTORY_FILE, "r") as f:
             history = json.load(f)
 
     except Exception:
-
         history = {}
 
 else:
-
     history = {}
 
 # ============================================================
@@ -158,8 +152,8 @@ def adx_calc(high, low, close, period=14):
     )
 
     plus_di = (
-        100 *
-        pd.Series(
+        100
+        * pd.Series(
             plus_dm,
             index=high.index
         ).rolling(period).mean()
@@ -167,8 +161,8 @@ def adx_calc(high, low, close, period=14):
     )
 
     minus_di = (
-        100 *
-        pd.Series(
+        100
+        * pd.Series(
             minus_dm,
             index=high.index
         ).rolling(period).mean()
@@ -180,8 +174,8 @@ def adx_calc(high, low, close, period=14):
     ).replace(0, np.nan)
 
     dx = (
-        100 *
-        (plus_di - minus_di).abs()
+        100
+        * (plus_di - minus_di).abs()
         / denominator
     )
 
@@ -244,7 +238,7 @@ for i, symbol in enumerate(pairs, 1):
         if np.isnan(rsi):
             continue
 
-        # Strong momentum zone only
+        # Strong momentum zone
         if rsi < 52 or rsi > 68:
             continue
 
@@ -292,7 +286,7 @@ for i, symbol in enumerate(pairs, 1):
             / ema50_now
         ) * 100
 
-        # Stronger trend required
+        # Minimum trend strength
         if ema_distance < 0.30:
             continue
 
@@ -331,7 +325,7 @@ for i, symbol in enumerate(pairs, 1):
         if np.isnan(adx):
             continue
 
-        # Strong directional movement
+        # Direction must have reasonable strength
         if adx < 20:
             continue
 
@@ -346,7 +340,7 @@ for i, symbol in enumerate(pairs, 1):
             / highest20
         ) * 100
 
-        # Must be close to resistance or already breaking it
+        # Must be close to resistance or above it
         if distance_to_resistance < -0.30:
             continue
 
@@ -378,7 +372,7 @@ for i, symbol in enumerate(pairs, 1):
         if entry <= candle_open:
             continue
 
-        # Stronger candle required
+        # Strong candle
         if body_ratio < 0.45:
             continue
 
@@ -414,7 +408,7 @@ for i, symbol in enumerate(pairs, 1):
         if risk > atr * 3.0:
             continue
 
-        # Stop cannot be extremely tiny
+        # Stop cannot be unrealistically tiny
         if risk < atr * 0.35:
             continue
 
@@ -551,4 +545,347 @@ for i, symbol in enumerate(pairs, 1):
 
             adx_score = 15
 
-        elif adx
+        elif adx >= 35:
+
+            adx_score = 14
+
+        elif adx >= 30:
+
+            adx_score = 13
+
+        elif adx >= 25:
+
+            adx_score = 11
+
+        elif adx >= 20:
+
+            adx_score = 8
+
+        else:
+
+            adx_score = 3
+
+        # ----------------------------------------------------
+        # BREAKOUT / 10
+        # ----------------------------------------------------
+
+        if distance_to_resistance >= 1.0:
+
+            breakout_score = 10
+
+        elif distance_to_resistance >= 0.5:
+
+            breakout_score = 9
+
+        elif distance_to_resistance >= 0.2:
+
+            breakout_score = 8
+
+        elif distance_to_resistance >= 0:
+
+            breakout_score = 7
+
+        elif distance_to_resistance >= -0.15:
+
+            breakout_score = 5
+
+        else:
+
+            breakout_score = 2
+
+        # ----------------------------------------------------
+        # CANDLE / 10
+        # ----------------------------------------------------
+
+        if body_ratio >= 0.80:
+
+            candle_score = 10
+
+        elif body_ratio >= 0.70:
+
+            candle_score = 9
+
+        elif body_ratio >= 0.60:
+
+            candle_score = 8
+
+        elif body_ratio >= 0.50:
+
+            candle_score = 7
+
+        elif body_ratio >= 0.45:
+
+            candle_score = 6
+
+        else:
+
+            candle_score = 3
+
+        # ====================================================
+        # FINAL SCORE
+        # ====================================================
+
+        score = round(
+            volume_score
+            + rsi_score
+            + ema_score
+            + macd_score
+            + adx_score
+            + breakout_score
+            + candle_score
+        )
+
+        score = min(
+            score,
+            100
+        )
+
+        candidate = {
+
+            "symbol": symbol,
+
+            "score": score,
+
+            "rsi": round(
+                rsi,
+                1
+            ),
+
+            "vol": round(
+                volume_ratio,
+                2
+            ),
+
+            "adx": round(
+                adx,
+                1
+            ),
+
+            "entry": entry,
+
+            "stop": stop,
+
+            "tp1": tp1,
+
+            "tp2": tp2,
+
+            "tp3": tp3
+        }
+
+        # Save every technically valid candidate
+        best_raw.append(candidate)
+
+        # Only strong 90+ signals
+        if score >= MIN_SCORE:
+
+            candidates.append(candidate)
+
+    except Exception:
+
+        continue
+
+    if i % 100 == 0:
+
+        print(
+            f"Scanned: {i}/{len(pairs)}"
+        )
+
+# ============================================================
+# RESULTS
+# ============================================================
+
+best_raw = sorted(
+    best_raw,
+    key=lambda x: x["score"],
+    reverse=True
+)
+
+candidates = sorted(
+    candidates,
+    key=lambda x: x["score"],
+    reverse=True
+)
+
+print()
+print(
+    f"Valid candidates: {len(best_raw)}"
+)
+
+print(
+    f"Strong signals (90+): {len(candidates)}"
+)
+
+# ============================================================
+# DIAGNOSTIC
+# ============================================================
+
+if best_raw:
+
+    print()
+    print("TOP 10 SCORES")
+
+    for x in best_raw[:10]:
+
+        print(
+            f"{x['symbol']} | "
+            f"Score {x['score']} | "
+            f"RSI {x['rsi']} | "
+            f"Vol x{x['vol']} | "
+            f"ADX {x['adx']}"
+        )
+
+else:
+
+    print(
+        "No valid candidates found."
+    )
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+if not TOKEN:
+
+    print(
+        "❌ Missing TELEGRAM_BOT_TOKEN"
+    )
+
+elif not CHAT_ID:
+
+    print(
+        "❌ Missing TELEGRAM_CHAT_ID"
+    )
+
+elif not candidates:
+
+    print(
+        "No strong signal above 90."
+    )
+
+else:
+
+    # ========================================================
+    # STRONGEST SIGNAL ONLY
+    # ========================================================
+
+    s = candidates[0]
+
+    now = time.time()
+
+    # ========================================================
+    # COOLDOWN
+    # ========================================================
+
+    if (
+        s["symbol"] in history
+        and
+        now - history[s["symbol"]] < COOLDOWN
+    ):
+
+        print(
+            "Signal already sent recently:",
+            s["symbol"]
+        )
+
+    else:
+
+        # ====================================================
+        # SIGNAL LEVEL
+        # ====================================================
+
+        if s["score"] >= 95:
+
+            level = "🔥 VERY STRONG"
+
+        else:
+
+            level = "🚀 STRONG"
+
+        # ====================================================
+        # TELEGRAM MESSAGE
+        # ====================================================
+
+        message = (
+
+            f"{level} BINANCE AI SIGNAL\n\n"
+
+            f"Pair: {s['symbol']}\n"
+
+            f"Score: {s['score']}/100\n"
+
+            f"RSI: {s['rsi']}\n"
+
+            f"Volume: x{s['vol']}\n"
+
+            f"ADX: {s['adx']}\n\n"
+
+            f"Entry: {s['entry']:.6f}\n"
+
+            f"Stop: {s['stop']:.6f}\n"
+
+            f"TP1: {s['tp1']:.6f}\n"
+
+            f"TP2: {s['tp2']:.6f}\n"
+
+            f"TP3: {s['tp3']:.6f}"
+
+        )
+
+        # ====================================================
+        # SEND TELEGRAM
+        # ====================================================
+
+        try:
+
+            r = requests.post(
+
+                f"https://api.telegram.org/"
+                f"bot{TOKEN}/sendMessage",
+
+                data={
+
+                    "chat_id": CHAT_ID,
+
+                    "text": message
+
+                },
+
+                timeout=20
+
+            )
+
+            print(
+                "Telegram API:",
+                r.status_code
+            )
+
+            if r.status_code == 200:
+
+                print(
+                    "✅ Telegram sent."
+                )
+
+                history[s["symbol"]] = now
+
+                with open(
+                    HISTORY_FILE,
+                    "w"
+                ) as f:
+
+                    json.dump(
+                        history,
+                        f
+                    )
+
+            else:
+
+                print(
+                    r.text
+                )
+
+        except Exception as e:
+
+            print(
+                "Telegram Error:",
+                e
+            )
