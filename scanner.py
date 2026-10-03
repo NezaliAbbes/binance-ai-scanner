@@ -820,14 +820,3 @@ else:
                 e
             )
 
-هذه النسخة أزلت منها سبب خطأ الـ"try/except" الذي ظهر عندك، لذلك لا تعدّل أي شيء داخل الكود.
-
-بعد لصقه في "scanner.py" شغّل Run workflow. إذا اشتغل، أرسل لي نتيجة الـActions، خصوصًا السطور التي تبدأ بـ:
-
-USDT Spot pairs:
-Technical candidates:
-Signals >= 75:
-TOP 10 CANDIDATES
-Telegram API:
-
-ومنها سنعرف مباشرة هل المشكلة في الفلاتر أم الإشارة أم Telegram.
